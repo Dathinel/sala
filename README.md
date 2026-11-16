@@ -4,6 +4,6 @@ Trabajo en grupo para las aplicaciones de Dathinel ([Rodaje](https://github.com/
 
 Contiene la parte común: el proceso `dathinel-red` (Rust) y el cliente `Dathinel.Sala` (C#), con el protocolo de módulos que nació en Rodaje. Lo propio de cada aplicación (qué es un cambio, cómo se valida) se queda en ella. Se usa como submódulo.
 
-**Estado:** diseño. La propuesta está en `docs/` de Rodaje (`docs/propuestas/colaboracion.md`, D-067); el contrato de esta biblioteca, en [docs/api.md](docs/api.md) cuando esté.
+**Estado:** diseño. La propuesta está en `docs/` de Rodaje (`docs/propuestas/colaboracion.md`, D-067); el contrato de esta biblioteca, en [docs/api.md](docs/api.md), y el modelo de amenazas en [docs/seguridad.md](docs/seguridad.md).
 
 Licencia MIT.
