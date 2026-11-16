@@ -30,7 +30,7 @@ Topología en estrella: cada invitado tiene **una** conexión, con el anfitrión
 - Se abre como cualquier módulo: la app lo lanza con `ModuleProcess` (o `ModuleManager`) y le habla el **protocolo de módulos v1 sin cambios** (`Rodaje/docs/protocolo-modulos.md`): tubería con nombre `CurrentUserOnly` en Windows, socket Unix 0700 en Linux y macOS (`--rodaje-pipe <nombre o ruta>`), marco de 4 bytes + JSON de hasta 1 MiB, `hello`/`welcome`, `invoke`/`result`/`error`, `cancel`, `ping`. El proceso comprueba que lo abrió el usuario actual (lo hace la tubería) y se cierra si muere la app (`getppid` en Unix, Job Object en Windows).
 - `welcome`: `module.id` = `dathinel-red`, `module.version` = la del crate, y las funciones de §2.
 - Un proceso = **una sala**, como anfitrión o como invitado. Arranca con `abrir-sala` o `unirse` y termina con `cerrar` o `shutdown`. No escucha nada antes de la primera de esas dos llamadas (nada abierto por defecto).
-- **Llamadas a la vez:** hasta 4 (`busy` después). Reparto que respeta la app: una para `recibir`, una para `enviar`, el resto para blobs y lo demás. `ping` se contesta siempre, también durante un `recibir` largo.
+- **Llamadas a la vez:** hasta 4 (`busy` después). Solo hay dos llamadas largas, `recibir` (siempre) y `unirse` (al entrar): las descargas de blobs **no** ocupan una llamada, empiezan con `blob-pedir`, que vuelve enseguida, y avisan por eventos. Así quedan libres al menos dos para `enviar` y lo demás. `ping` se contesta siempre, también durante un `recibir` largo.
 - Errores de llamada (`error` con `id`, la conexión con la app sigue): los códigos del protocolo más estos: `no-abierta` (no hay sala), `ya-abierta`, `rechazado` (el anfitrión dijo que no), `version` (otra app u otra versión: el mensaje dice cuál), `billete-invalido`, `sin-conexion`, `ocupado-red` (cola de salida llena: reintentar, contrapresión), `desconocido` (clave que no está en la sala), `huella` (un blob no coincide), `demasiado-grande`.
 
 ## 2. Funciones de `dathinel-red`
@@ -39,18 +39,19 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 
 | Función | Lado | Parámetros | Resultado |
 |---|---|---|---|
-| `abrir-sala` | anfitrión | `identidad` (64 hex, clave **privada**), `app`, `appVersion`, `red` (§2.1), `anclados` (lista de claves que entran sin billete) | `clave` (la pública), `direcciones` |
+| `abrir-sala` | anfitrión | `identidad` (64 hex, clave **privada**), `app`, `appVersion`, `red` (§2.1), `carpeta` (ruta absoluta de la carpeta de sala de la app), `anclados` (lista de claves que entran sin billete) | `clave` (la pública), `direcciones` |
 | `billete` | anfitrión | `caducaEn` (segundos, 60–604 800; 86 400 por defecto), `unUso` (sí por defecto) | `billete` (texto, §4), `id` |
-| `revocar` | anfitrión | — | — Invalida **todos** los billetes vivos (cambia los secretos); los miembros ya anclados siguen |
+| `revocar` | anfitrión | `id`? | — Sin `id`, invalida **todos** los billetes vivos; con `id`, solo ese. Los miembros ya anclados siguen |
 | `aceptar` | anfitrión | `clave` | — La clave pasa a anclada mientras viva el proceso; la app la guarda para la próxima vez |
 | `rechazar` | anfitrión | `clave`, `motivo`? | — |
 | `expulsar` | anfitrión | `clave`, `motivo`?, `vetar` (sí por defecto) | — Cierra su conexión; con `vetar`, la saca de anclados y ningún billete la vuelve a dejar entrar en esta sala |
-| `unirse` | invitado | `identidad`, `app`, `appVersion`, `alias`, `red`, y **o** `billete` **o** `anfitrion` + `direcciones`? (para volver sin billete, ya anclado) | `anfitrion` (clave), `via` (`directo` o `rele`). **Llamada larga:** espera la aprobación hasta 10 min; se cancela con `cancel` |
+| `unirse` | invitado | `identidad`, `app`, `appVersion`, `alias`, `red`, `carpeta`, y **o** `billete` **o** `anfitrion` + `direcciones`? (para volver sin billete, ya anclado) | `anfitrion` (clave), `via` (`directo` o `rele`). **Llamada larga:** espera la aprobación hasta 10 min; se cancela con `cancel` |
 | `enviar` | los dos | `a` (lista de claves; vacía o ausente = todos los conectados; en el invitado solo vale el anfitrión), `datos` (objeto JSON, la carga de la sala, ≤ 960 KiB serializado) | `encolados` (cuántos destinos) o `ocupado-red` |
-| `recibir` | los dos | `max` (eventos, 1–1024) | `eventos` (§2.2). **Llamada larga:** vuelve en cuanto hay algo o vacía a los 25 s; una sola a la vez; el lote cabe en 1 MiB (si no, se pagina en la siguiente) |
-| `blob-ofrecer` | los dos | `blobs`: lista (1–1024) de `{huella (SHA-256, 64 hex), tamano, ruta}` (archivos **locales** de quien ofrece) | — El proceso los sirve a los pares que los pidan mientras estén ofrecidos. El archivo **no debe cambiar** mientras esté ofrecido: se lee al servirlo, y quien pide comprueba la huella (si cambió, la descarga falla con `huella`). Lo seguro es ofrecer copias de un almacén por contenido dentro de la carpeta de sala |
+| `recibir` | los dos | `max` (eventos, 1–1024) | `eventos` (§2.2). **Llamada larga:** vuelve en cuanto hay algo o vacía a los 25 s; una sola a la vez. El lote se corta antes de pasar de 1000 KiB serializado: un `mensaje` de 960 KiB va solo, y lo que no cabe sale en la siguiente |
+| `blob-ofrecer` | los dos | `blobs`: lista (1–1024) de `{huella (SHA-256, 64 hex), tamano, ruta}` (archivos **locales** de quien ofrece, dentro de `carpeta`) | — El proceso los sirve a los pares que los pidan mientras estén ofrecidos. El archivo **no debe cambiar** mientras esté ofrecido: se lee al servirlo, y quien pide comprueba la huella (si cambió, la descarga falla con `huella`). Lo seguro es ofrecer copias de un almacén por contenido dentro de la carpeta de sala |
 | `blob-retirar` | los dos | `huellas` (lista) | — |
-| `blob-pedir` | los dos | `de` (clave), `huella`, `tamano` (exacto; > 4 GiB se rechaza sin abrir el stream), `destino` (ruta local que elige la app, dentro de su carpeta de sala) | `tamano`. **Llamada larga** con `progress` (≤ 1 cada 50 ms) y `cancel`. Escribe en `destino.parte`, comprueba tamaño y SHA-256 y renombra; si no coincide, borra y da `huella` |
+| `blob-pedir` | los dos | `de` (clave), `huella`, `tamano` (exacto; > 4 GiB se rechaza sin abrir el stream), `destino` (ruta local que elige la app; tiene que quedar dentro de `carpeta` una vez resuelta, o `invalid-parameters`) | — Vuelve enseguida. El avance llega como evento `blob-avance` (≤ 4/s) y el final como `blob-fin`. Escribe en `destino.parte`, comprueba tamaño y SHA-256 y renombra; si no coincide, borra y da `huella` |
+| `blob-cancelar` | los dos | `huella` | — Corta esa descarga y borra el `.parte` |
 | `estado` | los dos | — | `clave`, `rol` (`anfitrion`/`invitado`), `pares`: `[{clave, via, rttMs, enviadosB, recibidosB}]` |
 | `cerrar` | los dos | `motivo`? | — Cierra todo y deja el proceso listo para salir |
 
@@ -72,6 +73,8 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 | `entra` | los dos | `clave`, `alias`, `via` | Conexión admitida (aceptada o anclada) |
 | `sale` | los dos | `clave`, `motivo` (`cerro`, `red`, `ritmo`, `marco`, `expulsado`) | Se cortó una conexión |
 | `mensaje` | los dos | `de`, `datos` | Un marco del canal ordenado de un par admitido, en orden de llegada por par |
+| `blob-avance` | los dos | `huella`, `recibidos` | Como mucho 4/s por descarga |
+| `blob-fin` | los dos | `huella`, `ok`, `error`? (`huella`, `no-ofrecido`, `cancelado`, `disco`, `red`) | Terminó una descarga |
 | `cerrada` | invitado | `motivo` (`expulsado`, `revocado`, `anfitrion-cerro`) | La sala terminó para este equipo |
 
 El proceso nunca pasa a la app nada de un par que no esté admitido.
@@ -83,7 +86,7 @@ Una conexión iroh por invitado, con ALPN `dathinel/sala/1`. Streams:
 | Stream | Quién lo abre | Para qué |
 |---|---|---|
 | **Canal ordenado** | el invitado, el primero (bidireccional) | Saludo y después los marcos de la sala, en orden y fiables |
-| **Blob** | quien lo pide, uno por blob (bidireccional) | Cabecera `{"huella":…,"tamano":…}` y, de vuelta, los bytes en crudo. Prioridad menor que el canal ordenado: un blob de 500 MB no retrasa una edición |
+| **Blob** | quien lo pide, uno por blob (bidireccional) | Cabecera `{"huella":…,"tamano":…}` y, de vuelta, los bytes en crudo. Prioridad menor que el canal ordenado: un blob de 500 MB no retrasa una edición. Si no puede servirlo, quien ofrece corta el stream con un código de aplicación QUIC: `1` no ofrecido (o retirado), `2` cancelado, `3` error de lectura, `4` tamaño distinto |
 
 Marco del canal ordenado: 4 bytes de largo en little-endian + JSON UTF-8 estricto, **1 B a 960 KiB**, anidamiento ≤ 32, las mismas reglas de lectura que el protocolo de módulos (campos desconocidos se ignoran; un `type` desconocido válido se salta; lo demás cierra la conexión).
 
@@ -98,7 +101,7 @@ Invitado → anfitrión, primer marco:
 - `app` distinta → `{"type":"adios","motivo":"version","detalle":"Esta sala es de Unicomp."}` y cierre. **Rodaje y Unicomp no comparten sala** (Daniel, 15-nov).
 - `appVersion` distinta → `adios` con `version` y la versión del anfitrión: el invitado sabe cuál le falta.
 - Clave anclada (y no vetada) → admitida sin billete; `billete` y `secreto` pueden faltar.
-- Si no: el par `billete`+`secreto` tiene que ser de un billete vivo (comparación en tiempo constante), no caducado y, si es de un uso, no usado. Si falla → `adios` `billete-invalido`, sin evento para la app. Si vale → evento `solicitud` y el invitado espera; `aceptar` → `{"type":"admitido"}`; `rechazar` → `adios` `rechazado`. Un billete de un uso se gasta al **aceptar**, no al presentarlo.
+- Si no: el par `billete`+`secreto` tiene que ser de un billete vivo (comparación en tiempo constante), no caducado y, si es de un uso, no usado ni en trámite. Si falla → `adios` `billete-invalido` enseguida, sin evento para la app y sin ocupar un hueco de solicitud. Si vale → evento `solicitud` y el invitado espera; `aceptar` → `{"type":"admitido"}`; `rechazar` → `adios` `rechazado`. Un billete de un uso queda **en trámite** desde que se presenta bien (nadie más puede usarlo mientras) y **gastado** al aceptar o rechazar; si el invitado se va antes, vuelve a estar libre.
 - La identidad del invitado no la dice el `hola`: es la clave del par TLS de la conexión iroh. El alias es solo un nombre.
 
 ### 3.2 Límites del transporte, por par
@@ -109,7 +112,8 @@ Invitado → anfitrión, primer marco:
 | Ritmo de marcos | 100/s de media, ráfaga de 400 | Cierra la conexión (`ritmo`) |
 | Bytes por el canal ordenado | 8 MiB/s de media | Deja de leer (contrapresión de QUIC) |
 | Saludo | 10 s para el `hola`; 10 min esperando aprobación | Cierra |
-| Solicitudes pendientes | 4; 20 intentos de billete por minuto en todo el proceso | Cierra sin avisar a la app |
+| Solicitudes pendientes | 4, y solo las ocupan billetes válidos | Cierra sin avisar a la app |
+| Billetes falsos | 20 por minuto por dirección IP de origen (no en todo el proceso: un atacante no agota el cupo de los demás) | Cierra sin leer el `hola` |
 | Conexiones admitidas | 16 (las apps ponen su tope debajo: Unicomp 8) | `adios` `llena` |
 | Blobs en curso | 4 por par, 16 en total; tamaño ≤ 4 GiB y el que diga quien lo pide | Rechaza el stream |
 | Cola de salida | 4 MiB por par | `enviar` → `ocupado-red` |
@@ -169,7 +173,7 @@ Todos con `type` y la `epoca` del anfitrión. Tamaños medidos en el JSON serial
 | `type` | Sentido | Campos |
 |---|---|---|
 | `sincronizar` | invitado → anfitrión, al entrar y al volver | `epoca` (la que conoce), `ultimoSeq` |
-| `bienvenida` | anfitrión → invitado | `epoca`, `seq`, `miembros` `[{clave, alias, rol, color}]`, `reservas`, `suplente`? |
+| `bienvenida` | anfitrión → invitado, respuesta a **cada** `sincronizar` | `epoca`, `seq`, `miembros` `[{clave, alias, rol, color}]`, `reservas`, `suplente`? `{clave, direcciones}` (las del suplente, para encontrarlo sin relé ni mDNS). Después van los `orden` que le faltan, de `ultimoSeq + 1` a `seq`: al llegar a `seq` el invitado está al día |
 | `carga` | invitado → anfitrión | `id` (GUID del autor), `datos` (objeto, ≤ 900 KiB), `reservas` (claves que necesita, ≤ 64) |
 | `orden` | anfitrión → todos, el autor incluido | `epoca`, `seq`, `id`, `autor`, `datos` |
 | `rechazado` | anfitrión → autor | `id`, `motivo` (código), `detalle`? (≤ 4096) |
@@ -186,10 +190,11 @@ Nunca hay un mensaje para leer, listar o abrir archivos, ni para ejecutar nada. 
 
 ### 5.3 Orden central
 
-- El anfitrión tiene `epoca` y `seq`. Por cada `carga`: (1) el id ya visto (se guardan los 65 536 últimos) → reenvía al autor la misma respuesta (`orden` o `rechazado`): reenviar tras un corte es seguro; (2) rol `mirar` → `rechazado` `rol`; (3) alguna reserva de `reservas` no es del autor → `rechazado` `reserva`; (4) `validar` de la app → `rechazado` con su motivo; si no contesta en `TopeValidar` (30 s por defecto, lo pone la app) se cancela su token y la carga sale `rechazado` `tiempo`, para que un validador colgado no pare la sala; o (5) `seq + 1` y `orden` a todos.
+- El anfitrión tiene `epoca` y `seq`. Por cada `carga`: (1) el id ya visto (se guardan, **por miembro**, los ids de sus últimas 8192 cargas aceptadas y de sus 1024 últimas rechazadas: las ráfagas de un miembro no borran los ids de otro) → reenvía al autor la misma respuesta (`orden` o `rechazado`): reenviar tras un corte es seguro; (2) rol `mirar` → `rechazado` `rol`; (3) alguna reserva de `reservas` no es del autor → `rechazado` `reserva`; (4) `validar` de la app → `rechazado` con su motivo; si no contesta en `TopeValidar` (30 s por defecto, lo pone la app) se cancela su token y la carga sale `rechazado` `tiempo`, para que un validador colgado no pare la sala; o (5) `seq + 1` y `orden` a todos.
 - `validar` corre de a una, en el orden de llegada al anfitrión.
 - El invitado aplica los `orden` por `seq` creciente; uno con `seq` repetido se ignora, un hueco hace pedir `sincronizar` otra vez. Uno con `epoca` menor que la conocida se descarta (anfitrión viejo).
 - El anfitrión guarda en memoria los últimos 4096 `orden` (o 64 MiB) para reponer a quien vuelve; más atrás, `desfasado`.
+- Como cada `orden` lleva su `id` y su autor, cualquier miembro puede rehacer la tabla de ids aceptados con lo que recibió: es lo que hace un anfitrión nuevo (§5.6) para no aceptar dos veces una carga que el viejo ya había ordenado.
 - **Predicción local** (aplicar antes de que llegue el `orden`, y retirar al recibir `rechazado`) es de la app: la sala solo le dice qué entró y qué no.
 
 ### 5.4 Reservas
@@ -207,7 +212,7 @@ Objeto opaco ≤ 4 KiB (cabezal y selección en Rodaje, cursor 3D en Unicomp). E
 
 - **Reconexión:** el invitado que pierde al anfitrión reintenta solo a 1, 2, 4… hasta 30 s, con `unirse` por `anfitrion` (ya anclado) y `sincronizar` con su `ultimoSeq`. Las cargas sin respuesta se reenvían con su mismo `id`. Lo que la app guarde mientras tanto (el registro de Rodaje, el de Unicomp) es suyo.
 - **Traspaso con el anfitrión conectado:** `TraspasarAsync(clave)` ofrece su historial de reposición (los últimos `orden`) como blob y manda `traspaso` (época + 1) con el `seq` actual y la huella de ese blob; el nuevo lo baja, abre `dathinel-red` como anfitrión con los mismos anclados y `epoca` nueva; los demás se reconectan a su clave. El viejo pasa a invitado.
-- **Anfitrión caído:** el `suplente` de `bienvenida` (por defecto, el más antiguo) puede `TomarAnfitrionAsync()`: abre con `epoca + 1` y el `seq` que tenía. Los demás lo encuentran por su clave. Aquí no hay historial que pasar: el suplente repone desde lo que él recibió, y a quien le falte algo más viejo le llega `desfasado` y la app manda la instantánea con `directo` y blobs.
+- **Anfitrión caído:** solo el `suplente` de la última `bienvenida`/`miembros` (por defecto, el más antiguo) puede `TomarAnfitrionAsync()`, y solo tras **60 s seguidos** sin anfitrión: abre con `epoca + 1`, el `seq` que tenía y los ids de los `orden` que recibió. Los demás lo buscan por su clave y sus `direcciones` **solo si ellos también perdieron al anfitrión**; quien sigue conectado al anfitrión de siempre se queda con él. Así una caída de un solo invitado no derroca a un anfitrión vivo: el suplente aislado se queda solo en su época, y al volver a ver al anfitrión de verdad la app lo trata como «dos anfitriones». Aquí no hay historial que pasar: el suplente repone desde lo que él recibió, y a quien le falte algo más viejo le llega `desfasado` y la app manda la instantánea con `directo` y blobs.
 - **Dos anfitriones:** manda la época mayor; a igualdad, la clave menor. Un anfitrión que recibe un `sincronizar` con `epoca` mayor que la suya, o un invitado que ve un anfitrión con `epoca` menor, lanza `Superada(epoca, anfitrion)`: la app cierra esa sala, entra en la otra y trata lo confirmado desde la separación como «Cambios que no entraron» (Rodaje) o por su unión (Unicomp).
 
 ### 5.7 Blobs (canal aparte)
@@ -231,7 +236,7 @@ Un par solo puede bajar lo que el otro ofreció; el que manda no elige ni ve rut
 | `validar` | `TopeValidar`, 30 s por defecto; al vencer, `rechazado` `tiempo` |
 | Reservas | 64 por miembro, `reservar` ≤ 5/s, 120 s sin actividad |
 | Presencia | 4 KiB, 20/s (lo de más se descarta) |
-| Ids repetidos recordados | 65 536 |
+| Ids recordados | por miembro, 8192 aceptados y 1024 rechazados |
 | Historial para reconexión | 4096 `orden` o 64 MiB |
 | Alias | 1–40 caracteres, sin caracteres de control |
 
@@ -257,3 +262,11 @@ Un par solo puede bajar lo que el otro ofreció; el que manda no elige ni ve rut
 ## 8. Fuera de esta versión
 
 Malla entre invitados; más de una sala por proceso; cifrado de los blobs en reposo; NAT64 o IPv6 solo; cualquier cosa que comparta una red IP (Tailscale, VPN). Visor a lo Parsec y salas mixtas Rodaje-Unicomp: no (Daniel, 15-nov).
+
+## 9. Revisiones (16-nov-2026)
+
+**Sesión de Unicomp** (buzón, «Sesión de Unicomp: revisión de la API de sala»): la adopta y cambia su diseño a `dathinel-red` y `dathinel/sala/1`. Incorporado: mensaje `directo` fuera del orden, `validar` asíncrono con `TopeValidar` y rechazo `tiempo`, `blob-ofrecer` en lista y archivo ofrecido inmutable, historial de reposición en el traspaso, una carga por paso de deshacer (§5.8), y la prueba hostil del blob mayor que el tope.
+
+**Gemini** (`gemini-3.8-flash-high`, lectura, 14 hallazgos). Incorporado: el suplente solo toma la sala tras 60 s sin anfitrión y solo lo siguen quienes también lo perdieron (1); descargas de blobs sin ocupar una llamada de la tubería, con eventos `blob-avance` y `blob-fin` (2); lote de `recibir` cortado antes de 1000 KiB (3); límite de billetes falsos por IP y sin ocupar huecos de solicitud (4); billete de un uso en trámite desde que se presenta y gastado también al rechazar (5); direcciones del suplente en `bienvenida` (6); `directo` y `validar` asíncrono (7, 8, ya pedidos por Unicomp); tabla de ids rehecha desde los `orden` en el anfitrión nuevo (9); `carpeta` de sala y `destino` y `ruta` confinados a ella en el proceso (10); `bienvenida` como respuesta a cada `sincronizar` (11); `revocar` de un solo billete (12); ids recordados por miembro (13); códigos QUIC al cortar un blob (14).
+
+Descartado: consenso entre miembros o arrendamiento firmado para elegir anfitrión (es mucho código para un grupo pequeño; D-067 §12 ya lo descartó). Sus preguntas: el relé (n0 por defecto, propio opcional) y las salas partidas ya las decidió Daniel el 15-nov; subir `MaxConcurrentCalls` no hace falta con las descargas por eventos; la licencia MIT del protocolo extraído la aprobó Daniel con el repositorio (D-067 §10.1), y su autoría es solo de Daniel y Claude (`git log` de `src/Rodaje.Modules.Protocol`).
