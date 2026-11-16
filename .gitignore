@@ -1,0 +1,7 @@
+bin/
+obj/
+target/
+.entorno/
+.vs/
+*.user
+TestResults/
