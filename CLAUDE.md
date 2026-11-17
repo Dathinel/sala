@@ -10,7 +10,7 @@ Capa común de trabajo en grupo de Rodaje y Unicomp (decisión de Daniel, 15-nov
 - `src/Rodaje.Modules.Protocol` es copia de Rodaje (`91eab90a`) hasta el bloque de integración, que lo mueve y deja a Rodaje usándolo desde el submódulo. No editarlo aquí sin llevar el cambio a Rodaje.
 
 ## Estado
-16-nov: API v1 revisada por Unicomp y Gemini y unida (#1). Fase B: `dathinel-red` (abrir, billetes, aceptar/rechazar/expulsar/revocar, enviar/recibir, estado, cerrar) y `Dathinel.Sala` (miembros y roles, orden central con `validar` asíncrono y tope, directos, ritmo, ids repetidos, épocas, desfasado), 20 pruebas de C# con procesos reales y 6 de Rust. Ver el PR de la fase B para la CI de cada sistema.
+16-nov: API v1 revisada por Unicomp y Gemini y unida (#1). Fase B: `dathinel-red` (abrir, billetes, aceptar/rechazar/expulsar/revocar, enviar/recibir, estado, cerrar) y `Dathinel.Sala` (miembros y roles, orden central con `validar` asíncrono y tope, directos, ritmo, ids repetidos, épocas, desfasado), 22 pruebas de C# con procesos reales y 6 de Rust, en verde en Windows, Ubuntu 24.04 y macOS 15 (#2). Huella de cuatro palabras con `palabras.txt` (2048, prefijos de 4 letras distintos; Gemini). Revisión del núcleo por Gemini: 9 de sus 14 hallazgos arreglados; quedan (sin hacer) avisar antes de que un par perdido a mitad de la aprobación libere su billete y pruebas de billete caducado, de más de 4 solicitudes y de la conexión 17.
 
 ## Siguiente
 1. Reservas y presencia (§5.4, §5.5), reconexión automática con cargas pendientes (§5.6), traspaso y suplente, blobs (§5.7: `blob-ofrecer` en lista, `blob-pedir` por eventos, `carpeta` confinada).

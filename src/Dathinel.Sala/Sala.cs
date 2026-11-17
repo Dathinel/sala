@@ -165,12 +165,22 @@ public sealed class Sala : IAsyncDisposable
         Miembro m;
         lock (_cerrojo)
         {
-            if (!_pendientes.Remove(clave, out Miembro? p)) throw new SalaException("desconocido", "Esa clave no está esperando.");
+            if (!_pendientes.TryGetValue(clave, out Miembro? p)) throw new SalaException("desconocido", "Esa clave no está esperando.");
             if (_miembros.Count >= _opciones.MaxMiembros && !_miembros.ContainsKey(clave)) throw new SalaException("llena", "La sala está llena.");
             m = p with { Rol = rol };
+            // Antes de que el proceso lo admita: su «entra» puede llegar antes de que vuelva la llamada.
             _miembros[clave] = m;
         }
-        await _red.LlamarAsync("aceptar", new JsonObject { ["clave"] = clave }, ct).ConfigureAwait(false);
+        try
+        {
+            await _red.LlamarAsync("aceptar", new JsonObject { ["clave"] = clave }, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (_cerrojo) _miembros.Remove(clave);
+            throw;
+        }
+        lock (_cerrojo) _pendientes.Remove(clave);
     }
 
     public async Task RechazarAsync(string clave, CancellationToken ct = default)
@@ -251,7 +261,7 @@ public sealed class Sala : IAsyncDisposable
                 {
                     await AtenderAsync(ev).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is SalaException or InvalidOperationException or KeyNotFoundException or FormatException)
+                catch (Exception ex) when (ex is SalaException or InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)
                 {
                     // Un mensaje de un par que no tiene la forma esperada se descarta; el proceso ya validó el marco.
                 }
@@ -324,7 +334,7 @@ public sealed class Sala : IAsyncDisposable
                 }
             case "carga":
                 {
-                    Guid id = Guid.Parse(m.GetProperty("id").GetString()!);
+                    if (!Guid.TryParse(m.GetProperty("id").GetString(), out Guid id)) return;
                     JsonElement datos = m.GetProperty("datos");
                     if (datos.ValueKind != JsonValueKind.Object) return;
                     if (Encoding.UTF8.GetByteCount(datos.GetRawText()) > MaxCarga)
@@ -442,16 +452,19 @@ public sealed class Sala : IAsyncDisposable
                 continue;
             }
 
-            Seq++;
-            JsonObject orden = new() { ["type"] = "orden", ["epoca"] = Epoca, ["seq"] = Seq, ["id"] = id.ToString(), ["autor"] = autor.Clave, ["datos"] = Nodo(datos) };
+            JsonObject orden;
+            long seq;
             lock (_cerrojo)
             {
+                // Seq y el historial cambian juntos: ReponerAsync los lee bajo el mismo candado.
+                seq = ++Seq;
+                orden = new() { ["type"] = "orden", ["epoca"] = Epoca, ["seq"] = seq, ["id"] = id.ToString(), ["autor"] = autor.Clave, ["datos"] = Nodo(datos) };
                 Recordar(autor.Clave).Aceptada(id, orden);
                 _historial.AddLast(orden);
                 if (_historial.Count > HistorialMax) _historial.RemoveFirst();
             }
             await IntentarAsync(MandarAsync((JsonObject)orden.DeepClone(), null, _fin.Token)).ConfigureAwait(false);
-            Ordenada?.Invoke(new Ordenado(Epoca, Seq, id, autor.Clave, datos.Clone()));
+            Ordenada?.Invoke(new Ordenado(Epoca, seq, id, autor.Clave, datos.Clone()));
         }
     }
 

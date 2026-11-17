@@ -154,6 +154,14 @@ public sealed class ProcesoTests
         using CancellationTokenSource fin = new();
         Task decide = DecidirAsync(anf, true, new(), fin.Token);
 
+        // Revocar uno deja vivo al otro; revocar todos, a ninguno.
+        string uno = await BilleteAsync(anf, unUso: false), otro = await BilleteAsync(anf, unUso: false);
+        string idUno = JsonDocument.Parse(Convert.FromBase64String(Pad(uno["dathinel1.".Length..]))).RootElement.GetProperty("id").GetString()!;
+        await anf.LlamarAsync("revocar", new JsonObject { ["id"] = idUno });
+        await using (ProcesoRed inv = await ProcesoRed.AbrirAsync(RutaRed, default))
+            Assert.Equal("billete-invalido", (await Assert.ThrowsAsync<SalaException>(() => inv.LlamarAsync("unirse", Unirse(Identidad.Nueva(), uno)))).Codigo);
+        await using (ProcesoRed inv = await ProcesoRed.AbrirAsync(RutaRed, default))
+            await inv.LlamarAsync("unirse", Unirse(Identidad.Nueva(), otro));
         string billete = await BilleteAsync(anf, unUso: false);
         await anf.LlamarAsync("revocar", new JsonObject());
         await using (ProcesoRed inv = await ProcesoRed.AbrirAsync(RutaRed, default))

@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -25,6 +25,7 @@ const MAX_PENDIENTES: usize = 4;
 const MAX_FALSOS_POR_MINUTO: usize = 20;
 const COLA_POR_PAR: usize = 4 << 20;
 const LOTE_RECIBIR: usize = 1000 * 1024;
+const MAX_EVENTOS_BYTES: usize = 64 << 20;
 const ESPERA_RECIBIR: Duration = Duration::from_secs(25);
 const ESPERA_HOLA: Duration = Duration::from_secs(10);
 const ESPERA_APROBACION: Duration = Duration::from_secs(600);
@@ -86,7 +87,7 @@ struct Estado {
     anclados: HashSet<EndpointId>,
     vetados: HashSet<EndpointId>,
     billetes: HashMap<String, BilleteVivo>,
-    pendientes: HashMap<EndpointId, oneshot::Sender<bool>>,
+    pendientes: HashMap<EndpointId, (oneshot::Sender<bool>, String)>,
     pares: HashMap<EndpointId, Par>,
     falsos: HashMap<String, VecDeque<Instant>>,
 }
@@ -102,9 +103,12 @@ pub struct Sala {
     estado: Mutex<Estado>,
     eventos: Mutex<VecDeque<Value>>,
     hay_eventos: Notify,
+    /// Bytes de mensajes en `eventos` que la app aún no leyó.
+    pendiente: AtomicUsize,
 }
 
 static SALA: OnceLock<Mutex<Option<Arc<Sala>>>> = OnceLock::new();
+static ABRIENDO: AtomicBool = AtomicBool::new(false);
 
 fn ranura() -> &'static Mutex<Option<Arc<Sala>>> {
     SALA.get_or_init(Mutex::default)
@@ -177,9 +181,15 @@ fn texto_corto(p: &Value, campo: &str) -> Result<String, Fallo> {
 
 /// `abrir-sala` (anfitrión) o `unirse` (invitado): crea el endpoint con la red pedida.
 async fn abrir(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<Value, Fallo> {
-    if ranura().lock().unwrap().is_some() {
+    if ranura().lock().unwrap().is_some() || ABRIENDO.swap(true, Ordering::SeqCst) {
         return fallo("ya-abierta", "Ya hay una sala abierta en este proceso.");
     }
+    let r = abrir_una(p, anfitrion, cancelar).await;
+    ABRIENDO.store(false, Ordering::SeqCst);
+    r
+}
+
+async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<Value, Fallo> {
     let secreta = hex::secreta(param(&p, "identidad")?).ok_or(Fallo(
         "invalid-parameters",
         "«identidad» no es una clave privada.".into(),
@@ -245,6 +255,7 @@ async fn abrir(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<Value
         estado: Mutex::default(),
         eventos: Mutex::default(),
         hay_eventos: Notify::new(),
+        pendiente: AtomicUsize::new(0),
     });
 
     if anfitrion {
@@ -353,6 +364,18 @@ impl Sala {
             }
             None => e.billetes.clear(),
         }
+        // Quien esperaba aprobación con un billete revocado ya no entra.
+        let caidos: Vec<EndpointId> = e
+            .pendientes
+            .iter()
+            .filter(|(_, (_, b))| !e.billetes.contains_key(b))
+            .map(|(k, _)| *k)
+            .collect();
+        for k in caidos {
+            if let Some((tx, _)) = e.pendientes.remove(&k) {
+                let _ = tx.send(false);
+            }
+        }
         Ok(Value::Null)
     }
 
@@ -361,7 +384,7 @@ impl Sala {
         let k = param_clave(p, "clave")?;
         let tx = self.estado.lock().unwrap().pendientes.remove(&k);
         match tx {
-            Some(tx) => {
+            Some((tx, _)) => {
                 let _ = tx.send(si);
                 Ok(Value::Null)
             }
@@ -417,18 +440,25 @@ impl Sala {
             }
             _ => e.pares.keys().copied().collect(),
         };
-        if destinos
-            .iter()
-            .any(|k| e.pares[k].cola.load(Ordering::Relaxed) + marco.len() > COLA_POR_PAR)
-        {
+        let difusion = !p
+            .get("a")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty());
+        let llena =
+            |k: &EndpointId| e.pares[k].cola.load(Ordering::Relaxed) + marco.len() > COLA_POR_PAR;
+        // A destinos concretos, todo o nada; en una difusión se salta a quien va atrasado (lo repone al sincronizar).
+        if !difusion && destinos.iter().any(llena) {
             return fallo("ocupado-red", "La cola de salida está llena; reintenta.");
         }
-        for k in &destinos {
+        let (llenos, listos): (Vec<EndpointId>, Vec<EndpointId>) =
+            destinos.into_iter().partition(llena);
+        for k in &listos {
             let par = &e.pares[k];
             par.cola.fetch_add(marco.len(), Ordering::Relaxed);
             let _ = par.tx.send(marco.clone());
         }
-        Ok(json!({"encolados": destinos.len()}))
+        let llenos: Vec<String> = llenos.iter().map(hex::de_clave).collect();
+        Ok(json!({"encolados": listos.len(), "llenos": llenos}))
     }
 
     async fn recibir(&self, p: &Value, cancelar: Arc<Notify>) -> Result<Value, Fallo> {
@@ -450,7 +480,12 @@ impl Sala {
                         break;
                     }
                     bytes += n;
-                    lote.push(cola.pop_front().unwrap());
+                    let mut ev = cola.pop_front().unwrap();
+                    if let Some(m) = ev.as_object_mut().and_then(|o| o.remove("_n")) {
+                        self.pendiente
+                            .fetch_sub(m.as_u64().unwrap_or(0) as usize, Ordering::Relaxed);
+                    }
+                    lote.push(ev);
                 }
                 if !lote.is_empty() {
                     if !cola.is_empty() {
@@ -511,16 +546,24 @@ impl Sala {
 
     /// Cuenta (si `anotar`) y consulta los billetes falsos por origen en el último minuto.
     fn demasiados_falsos(&self, origen: &str, anotar: bool) -> bool {
+        // Por relé no hay IP: contarlos juntos dejaría a un atacante cerrar la puerta a todos los que llegan por relé.
+        if origen == "rele" {
+            return false;
+        }
         let mut e = self.estado.lock().unwrap();
-        let q = e.falsos.entry(origen.to_string()).or_default();
         let hace_un_minuto = Instant::now() - Duration::from_secs(60);
+        let q = e.falsos.entry(origen.to_string()).or_default();
         while q.front().is_some_and(|t| *t < hace_un_minuto) {
             q.pop_front();
         }
         if anotar {
             q.push_back(Instant::now());
         }
-        q.len() >= MAX_FALSOS_POR_MINUTO
+        let n = q.len();
+        if n == 0 {
+            e.falsos.remove(origen);
+        }
+        n >= MAX_FALSOS_POR_MINUTO
     }
 
     async fn saludo_entrante(self: Arc<Self>, conn: Connection, origen: String) {
@@ -579,7 +622,11 @@ impl Sala {
                 }
             };
             let (tx, rx) = oneshot::channel();
-            self.estado.lock().unwrap().pendientes.insert(quien, tx);
+            self.estado
+                .lock()
+                .unwrap()
+                .pendientes
+                .insert(quien, (tx, billete_id.clone().unwrap_or_default()));
             self.evento(
                 json!({"tipo":"solicitud","clave":hex::de_clave(&quien),"alias":alias,
                 "appVersion":self.app_version,"billete":billete_id}),
@@ -698,7 +745,11 @@ impl Sala {
                         .collect()
                 })
                 .unwrap_or_default();
-            (direccion(k, marco::texto(p, "rele"), &dirs)?, None, None)
+            (
+                direccion(k, marco::texto(p, "rele").or(self.rele.as_deref()), &dirs)?,
+                None,
+                None,
+            )
         };
         let anfitrion = destino.id;
         let conn = tokio::time::timeout(Duration::from_secs(30), self.ep.connect(destino, ALPN))
@@ -782,14 +833,22 @@ impl Sala {
         let quien = conn.remote_id();
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let cola = Arc::new(AtomicUsize::new(0));
-        let viejo = self.estado.lock().unwrap().pares.insert(
-            quien,
-            Par {
-                conn: conn.clone(),
-                tx,
-                cola: cola.clone(),
-            },
-        );
+        let viejo = {
+            let mut e = self.estado.lock().unwrap();
+            if e.vetados.contains(&quien) {
+                drop(e);
+                conn.close(VarInt::from_u32(cierre::EXPULSADO), b"expulsado");
+                return;
+            }
+            e.pares.insert(
+                quien,
+                Par {
+                    conn: conn.clone(),
+                    tx,
+                    cola: cola.clone(),
+                },
+            )
+        };
         if let Some(v) = viejo {
             v.conn
                 .close(VarInt::from_u32(cierre::REEMPLAZADA), b"otra conexion");
@@ -823,21 +882,33 @@ impl Sala {
                             break Some(cierre::RITMO);
                         }
                         fichas -= 1.0;
-                        sala.evento(json!({"tipo":"mensaje","de":clave,"datos":datos}));
+                        // Si la app no lee, se deja de leer el canal y QUIC frena al otro lado.
+                        while sala.pendiente.load(Ordering::Relaxed) > MAX_EVENTOS_BYTES {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        let n = serde_json::to_vec(&datos).map(|v| v.len()).unwrap_or(0);
+                        sala.pendiente.fetch_add(n, Ordering::Relaxed);
+                        sala.evento(json!({"tipo":"mensaje","de":clave,"datos":datos,"_n":n}));
                     }
                     Err(ErrorMarco::Fin) => break None,
                     Err(ErrorMarco::Largo) | Err(ErrorMarco::Json) => break Some(cierre::MARCO),
                     Err(ErrorMarco::Io) => break None,
                 }
             };
-            if let Some(c) = cierre_propio {
-                conn.close(VarInt::from_u32(c), b"");
+            match cierre_propio {
+                Some(c) => conn.close(VarInt::from_u32(c), b""),
+                // El otro terminó el canal: se cierra ya, sin esperar al plazo de inactividad de QUIC.
+                None if conn.close_reason().is_none() => {
+                    conn.close(VarInt::from_u32(cierre::CERRO), b"")
+                }
+                None => {}
             }
             let razon = conn.closed().await;
             let codigo = cierre_propio.map(u64::from).or_else(|| match &razon {
                 iroh::endpoint::ConnectionError::ApplicationClosed(a) => {
                     Some(a.error_code.into_inner())
                 }
+                iroh::endpoint::ConnectionError::LocallyClosed => Some(cierre::CERRO as u64),
                 _ => None,
             });
             let mot = codigo.map(motivo).unwrap_or("red");

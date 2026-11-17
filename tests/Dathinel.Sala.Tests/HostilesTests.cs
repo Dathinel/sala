@@ -130,6 +130,9 @@ public sealed class HostilesTests
             new() { ["type"] = "orden", ["seq"] = 99, ["datos"] = new JsonObject() },
             new() { ["sin"] = "tipo" },
             new() { ["type"] = "directo", ["datos"] = 5 },
+            new() { ["type"] = "carga", ["id"] = null, ["datos"] = new JsonObject() },
+            new() { ["type"] = "carga", ["id"] = 123, ["datos"] = new JsonObject() },
+            new() { ["type"] = null },
         ];
         foreach (JsonObject b in basura) await malo.MandarAsync(b);
         await malo.MandarAsync(Carga(Guid.NewGuid(), 7));
