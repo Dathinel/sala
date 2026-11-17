@@ -24,7 +24,7 @@ Modelo de amenazas de la capa común. Los doce huecos de Unicomp (D-017 §8.6.6)
 | 9 | Versiones distintas | El `hola` lleva `sala`, `app` y `appVersion`; otra app (Rodaje contra Unicomp) u otra versión no entra y el `adios` dice cuál | Las dos, entre dos procesos |
 | 10 | Dependencias de Rust | Toolchain y crates fijados (`rust-toolchain.toml`, `Cargo.lock`, `=1.4.1`), `cargo deny` con licencias y avisos de seguridad en la CI, nada GPL | `cargo deny check` en la CI |
 | 11 | El cortafuegos de Windows pregunta | `dathinel-red` solo escucha tras `abrir-sala` o `unirse`; la app explica antes que Windows preguntará | A mano, en cada app |
-| 12 | Pérdida del dispositivo de un miembro | El anfitrión lo expulsa con veto; `Identidad` guarda la clave privada con DPAPI (usuario actual) en Windows y en un archivo 0600 en Unix | Clave vetada con billete válido: no entra |
+| 12 | Pérdida del dispositivo de un miembro | El anfitrión lo expulsa con veto; `Identidad.CargarOCrear` guarda la clave privada con DPAPI (usuario actual) en Windows y en un archivo 0600 en Linux y macOS (rechaza uno con permisos de grupo u otros; sin llavero del sistema todavía) | Clave vetada con billete válido: no entra; `IdentidadTests` |
 
 ## Lo que añade Rodaje
 
@@ -35,6 +35,9 @@ Modelo de amenazas de la capa común. Los doce huecos de Unicomp (D-017 §8.6.6)
 | Blobs | Solo por huella SHA-256 y tamaño exacto; el destino lo elige quien pide, dentro de su carpeta; se escribe en `.parte` y se renombra solo si coinciden; la app vuelve a comprobarlo y lo abre con su lector normal |
 | Roles | `mirar` no puede mandar cargas ni reservas: lo rechaza el anfitrión aunque el cliente lo mande |
 | Otro proceso del equipo contra la tubería | Protocolo de módulos: `CurrentUserOnly` y PID del cliente comprobado en Windows; socket 0700 y `SO_PEERCRED`/`LOCAL_PEERPID` en Unix |
+| mDNS | Apagado por defecto. Encendido, anuncia la clave pública del equipo en la red local (servicio `dathinel-sala`): cualquiera en esa red sabe que hay una sala y puede intentar entrar, pero sin billete ni clave anclada no pasa del saludo |
+| Blobs servidos | Solo lo ofrecido, por huella y tamaño exactos, 4 por par y 16 en total; quien ofrece no puede escribir en el equipo de quien pide; `destino` y `ruta` confinados a la carpeta de sala (también contra `..` y enlaces, se resuelven antes de comparar) |
+| Traspaso y suplente | Solo el anfitrión traspasa y solo a un miembro editor conectado; el suplente es el que nombró el anfitrión y solo tras `EsperaSuplente` sin él; los demás solo lo siguen si también lo perdieron |
 | Lo que queda expuesto | La IP a los pares en conexión directa; metadatos al relé; el alias, color y clave pública de cada uno a los demás miembros |
 
 ## Lo que no cubre
