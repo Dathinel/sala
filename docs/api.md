@@ -41,20 +41,20 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 |---|---|---|---|
 | `abrir-sala` | anfitrión | `identidad` (64 hex, clave **privada**), `app`, `appVersion`, `red` (§2.1), `carpeta` (ruta absoluta de la carpeta de sala de la app), `anclados` (lista de claves que entran sin billete) | `clave` (la pública), `direcciones` |
 | `billete` | anfitrión | `caducaEn` (segundos, 5–604 800; 86 400 por defecto), `unUso` (sí por defecto) | `billete` (texto, §4), `id` |
-| `revocar` | anfitrión | `id`? | — Sin `id`, invalida **todos** los billetes vivos; con `id`, solo ese. Los miembros ya anclados siguen |
+| `revocar` | anfitrión | `id`? | — Sin `id`, invalida **todos** los billetes vivos; con `id`, solo ese. Los miembros ya anclados siguen. Retira las solicitudes afectadas con `solicitud-retirada` (`revocado`); el invitado recibe `adios` `billete-invalido` |
 | `aceptar` | anfitrión | `clave` | — La clave pasa a anclada mientras viva el proceso; la app la guarda para la próxima vez |
 | `rechazar` | anfitrión | `clave`, `motivo`? | — |
 | `expulsar` | anfitrión | `clave`, `motivo`?, `vetar` (sí por defecto) | — Cierra su conexión; con `vetar`, la saca de anclados y ningún billete la vuelve a dejar entrar en esta sala |
 | `unirse` | invitado | `identidad`, `app`, `appVersion`, `alias`, `red`, `carpeta`, y **o** `billete` **o** `anfitrion` + `direcciones`? (para volver sin billete, ya anclado) | `anfitrion` (clave), `via` (`directo` o `rele`), `anfitrionDirecciones`, `direcciones` (las propias). **Llamada larga:** espera la aprobación hasta 10 min; se cancela con `cancel`. Un invitado puede volver a llamarla en el mismo proceso (reconexión o cambio de anfitrión): conserva su endpoint y sus direcciones |
 | `ascender` | invitado | `anclados` | `clave`, `direcciones`. El invitado pasa a anfitrión **con el mismo endpoint** (las direcciones que ya conocen los demás): corta con el anfitrión anterior (cierre `traspaso`) y empieza a aceptar conexiones. Lo usan el traspaso y el suplente |
-| `enviar` | los dos | `a` (lista de claves; vacía o ausente = todos los conectados; en el invitado solo vale el anfitrión), `datos` (objeto JSON, la carga de la sala, ≤ 960 KiB serializado) | `encolados` (cuántos destinos) y `llenos` (claves que se saltaron). A destinos concretos es todo o nada (`ocupado-red`); en una difusión se salta a quien tiene la cola llena, que repone lo perdido al ver el hueco y `sincronizar` |
+| `enviar` | los dos | `a` (lista de claves; vacía o ausente = todos los conectados; en el invitado solo vale el anfitrión), `datos` (objeto JSON, la carga de la sala, ≤ 960 KiB serializado y profundidad ≤ 28) | `encolados` (cuántos destinos) y `llenos` (claves que se saltaron). A destinos concretos es todo o nada (`ocupado-red`); en una difusión se salta a quien tiene la cola llena, que repone lo perdido al ver el hueco y `sincronizar` |
 | `recibir` | los dos | `max` (eventos, 1–1024) | `eventos` (§2.2). **Llamada larga:** vuelve en cuanto hay algo o vacía a los 25 s; una sola a la vez. El lote se corta antes de pasar de 1000 KiB serializado: un `mensaje` de 960 KiB va solo, y lo que no cabe sale en la siguiente |
 | `blob-ofrecer` | los dos | `blobs`: lista (1–1024) de `{huella (SHA-256, 64 hex), tamano, ruta}` (archivos **locales** de quien ofrece, dentro de `carpeta`) | — El proceso los sirve a los pares que los pidan mientras estén ofrecidos. El archivo **no debe cambiar** mientras esté ofrecido: se lee al servirlo, y quien pide comprueba la huella (si cambió, la descarga falla con `huella`). Lo seguro es ofrecer copias de un almacén por contenido dentro de la carpeta de sala |
 | `blob-retirar` | los dos | `huellas` (lista) | — |
-| `blob-pedir` | los dos | `de` (clave), `huella`, `tamano` (exacto; > 4 GiB se rechaza sin abrir el stream), `destino` (ruta local que elige la app; tiene que quedar dentro de `carpeta` una vez resuelta, o `invalid-parameters`) | — Vuelve enseguida. El avance llega como evento `blob-avance` (≤ 4/s) y el final como `blob-fin`. Escribe en `destino.parte`, comprueba tamaño y SHA-256 y renombra; si no coincide, borra y da `huella` |
-| `blob-cancelar` | los dos | `huella` | — Corta esa descarga y borra el `.parte` |
+| `blob-pedir` | los dos | `de` (clave), `huella`, `tamano` (exacto; > 4 GiB se rechaza sin abrir el stream), `destino` (ruta local que elige la app; tiene que quedar dentro de `carpeta` una vez resuelta, o `invalid-parameters`) | `{"intento": <u64>}`. Contador del proceso desde 1. Vuelve enseguida; `blob-avance` (≤ 4/s) y `blob-fin` identifican el intento. Máximo 4 descargas por par y 16 en total; destino resuelto ya en uso → `ocupado`. Crea `<destino>.<16 hex aleatorios>.parte` en exclusiva (`create_new`, también rechaza enlaces). Comprueba que el temporal resuelto sigue dentro de `carpeta`; si no, lo borra y da `disco`. Comprueba tamaño y SHA-256; si no coinciden, borra y da `huella`. Antes de renombrar comprueba otra vez el padre del destino; si queda fuera, borra y da `disco` |
+| `blob-cancelar` | los dos | `intento` (u64) | — Señala la cancelación cooperativa. La tarea borra su `.parte` y emite un solo `blob-fin` con `error: "cancelado"`; no se aborta. Un intento ya terminado no hace nada |
 | `estado` | los dos | — | `clave`, `direcciones`, `rol` (`anfitrion`/`invitado`), `pares`: `[{clave, via, rttMs, enviadosB, recibidosB}]` |
-| `cerrar` | los dos | `motivo`? | — Cierra todo y deja el proceso listo para salir |
+| `cerrar` | los dos | `motivo`? | — Cancela cooperativamente las descargas, espera su limpieza y su `blob-fin` (`cancelado`), cierra todo y deja el proceso listo para salir |
 
 ### 2.1 `red`
 
@@ -71,14 +71,15 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 | `tipo` | Lado | Campos | Cuándo |
 |---|---|---|---|
 | `solicitud` | anfitrión | `clave`, `alias`, `appVersion`, `billete` (id) | Alguien con un billete válido quiere entrar. Hasta 4 pendientes a la vez; más se rechazan sin avisar |
+| `solicitud-retirada` | anfitrión | `clave` (64 hex), `motivo` (`se-fue`, `tiempo`, `revocado`) | Se quitó una solicitud sin `aceptar` ni `rechazar`: el invitado se fue, venció la aprobación o se revocó su billete |
 | `entra` | los dos | `clave`, `alias`, `via` | Conexión admitida (aceptada o anclada) |
 | `sale` | los dos | `clave`, `motivo` (`cerro`, `red`, `ritmo`, `marco`, `expulsado`) | Se cortó una conexión |
 | `mensaje` | los dos | `de`, `datos` | Un marco del canal ordenado de un par admitido, en orden de llegada por par |
-| `blob-avance` | los dos | `huella`, `recibidos` | Como mucho 4/s por descarga |
-| `blob-fin` | los dos | `huella`, `ok`, `error`? (`huella`, `no-ofrecido`, `cancelado`, `disco`, `red`) | Terminó una descarga |
+| `blob-avance` | los dos | `huella`, `intento` (u64), `recibidos` | Como mucho 4/s por descarga |
+| `blob-fin` | los dos | `huella`, `intento` (u64), `ok`, `error`? (`huella`, `no-ofrecido`, `cancelado`, `disco`, `red`, `ocupado`) | Terminó un intento de descarga; un solo final por intento |
 | `cerrada` | invitado | `motivo` (`expulsado`, `revocado`, `anfitrion-cerro`) | La sala terminó para este equipo |
 
-El proceso nunca pasa a la app nada de un par que no esté admitido.
+El proceso solo pasa mensajes y blobs de pares admitidos. Las solicitudes y sus retiradas son eventos de admisión. Los contadores `enviadosB` y `recibidosB` de `estado` son los bytes de datagramas de la conexión que da `Connection::stats()` de iroh 1.4.1; incluyen el tráfico QUIC, también los blobs.
 
 ## 3. Entre equipos: dentro de QUIC
 
@@ -87,9 +88,11 @@ Una conexión iroh por invitado, con ALPN `dathinel/sala/1`. Streams:
 | Stream | Quién lo abre | Para qué |
 |---|---|---|
 | **Canal ordenado** | el invitado, el primero (bidireccional) | Saludo y después los marcos de la sala, en orden y fiables |
-| **Blob** | quien lo pide, uno por blob (bidireccional) | Cabecera `{"huella":…,"tamano":…}` y, de vuelta, los bytes en crudo. Prioridad menor que el canal ordenado: un blob de 500 MB no retrasa una edición. Si no puede servirlo, quien ofrece corta el stream con un código de aplicación QUIC: `1` no ofrecido (o retirado), `2` cancelado, `3` error de lectura, `4` tamaño distinto |
+| **Blob** | quien lo pide, uno por blob (bidireccional) | Cabecera `{"huella":…,"tamano":…}` y, de vuelta, los bytes en crudo. Prioridad menor que el canal ordenado: un blob de 500 MB no retrasa una edición. Si no puede servirlo, quien ofrece corta el stream con un código de aplicación QUIC: `1` no ofrecido (o retirado), `2` cancelado, `3` error de lectura, `4` tamaño distinto, `5` ocupado. El servidor reserva el cupo antes de leer la cabecera y lo conserva hasta terminar, incluida la espera de `stopped` |
 
-Marco del canal ordenado: 4 bytes de largo en little-endian + JSON UTF-8 estricto, **1 B a 960 KiB**, anidamiento ≤ 32, las mismas reglas de lectura que el protocolo de módulos (campos desconocidos se ignoran; un `type` desconocido válido se salta; lo demás cierra la conexión).
+Marco del canal ordenado: 4 bytes de largo en little-endian + JSON UTF-8 estricto, **1 B a 960 KiB**, anidamiento ≤ **28** (también el `hola`), las mismas reglas de lectura que el protocolo de módulos (campos desconocidos se ignoran; un `type` desconocido válido se salta; lo demás cierra la conexión).
+
+Un marco de profundidad 29 cierra solo esa conexión con `marco`. La tubería local conserva el límite de 32: el marco del par llega a la app dentro de cuatro envoltorios.
 
 ### 3.1 Saludo (lo hace `dathinel-red`, antes de dejar pasar nada)
 
@@ -109,14 +112,14 @@ Invitado → anfitrión, primer marco:
 
 | Qué | Límite | Al pasarse |
 |---|---|---|
-| Marco del canal ordenado | 960 KiB | Cierra la conexión (`marco`) |
-| Ritmo de marcos | 100/s de media, ráfaga de 400 | Cierra la conexión (`ritmo`) |
-| Bytes por el canal ordenado | 8 MiB/s de media | Deja de leer (contrapresión de QUIC) |
+| Marco del canal ordenado | 960 KiB y profundidad 28 | Cierra la conexión (`marco`) |
+| Ritmo de marcos | El anfitrión recibe de cada invitado 100/s de media, ráfaga 400; el invitado recibe del anfitrión 1600/s, ráfaga 6400 (agrega a 16 miembros) | Cierra la conexión (`ritmo`) |
+| Bytes por el canal ordenado | Cubo por conexión: 8 MiB/s de media y ráfaga de 8 MiB, incluida la cabecera | Espera saldo antes de seguir leyendo (`tokio::time::sleep`, contrapresión de QUIC); no cierra |
 | Saludo | 10 s para el `hola`; 10 min esperando aprobación | Cierra |
-| Solicitudes pendientes | 4, y solo las ocupan billetes válidos | Cierra sin avisar a la app |
+| Solicitudes pendientes | 4, y solo las ocupan billetes válidos; comprobación y reserva en la misma sección crítica | Cierra sin avisar a la app |
 | Billetes falsos | 20 por minuto por dirección IP de origen (no en todo el proceso: un atacante no agota el cupo de los demás) | Cierra sin leer el `hola` |
-| Conexiones admitidas | 16 (las apps ponen su tope debajo: Unicomp 8) | `adios` `llena` |
-| Blobs en curso | 4 por par, 16 en total; tamaño ≤ 4 GiB y el que diga quien lo pide | Rechaza el stream |
+| Conexiones admitidas | 16 (las apps ponen su tope debajo: Unicomp 8); reserva atómica antes de escribir `admitido`, liberada en cualquier salida | `adios` `llena` |
+| Blobs en curso | Tanto al pedir como al servir: 4 por par y 16 en total por sala, con cupos separados por sentido; tamaño ≤ 4 GiB y el que diga quien lo pide | `blob-pedir` → `ocupado`; al servir, corta el stream con `5` |
 | Cola de salida | 4 MiB por par | `enviar` → `ocupado-red` |
 
 ## 4. Billete
