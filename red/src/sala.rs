@@ -16,6 +16,7 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::billete::{self, Billete};
 use crate::hex;
+use crate::limites::{BYTES_SEGUNDO, Cubo, Cupos, Reserva};
 use crate::marco::{self, ErrorMarco};
 
 pub const ALPN: &[u8] = b"dathinel/sala/1";
@@ -29,8 +30,6 @@ const MAX_EVENTOS_BYTES: usize = 64 << 20;
 const ESPERA_RECIBIR: Duration = Duration::from_secs(25);
 const ESPERA_HOLA: Duration = Duration::from_secs(10);
 const ESPERA_APROBACION: Duration = Duration::from_secs(600);
-const RITMO_MEDIO: f64 = 100.0;
-const RITMO_RAFAGA: f64 = 400.0;
 
 /// Códigos de cierre de conexión QUIC (los ve el otro lado como motivo de `sale` o `cerrada`).
 pub(crate) mod cierre {
@@ -90,7 +89,7 @@ pub(crate) struct Estado {
     anclados: HashSet<EndpointId>,
     vetados: HashSet<EndpointId>,
     billetes: HashMap<String, BilleteVivo>,
-    pendientes: HashMap<EndpointId, (oneshot::Sender<bool>, String)>,
+    pendientes: HashMap<EndpointId, (oneshot::Sender<Decision>, String)>,
     pub(crate) pares: HashMap<EndpointId, Par>,
     falsos: HashMap<String, VecDeque<Instant>>,
 }
@@ -104,6 +103,7 @@ pub struct Sala {
     pub(crate) carpeta: PathBuf,
     pub(crate) estado: Mutex<Estado>,
     pub(crate) blobs: Mutex<crate::blobs::Blobs>,
+    conexiones: Cupos,
     eventos: Mutex<VecDeque<Value>>,
     hay_eventos: Notify,
     /// Bytes de mensajes en `eventos` que la app aún no leyó.
@@ -128,6 +128,7 @@ fn actual() -> Result<Arc<Sala>, Fallo> {
 pub async fn cerrar_todo() {
     let s = ranura().lock().unwrap().take();
     if let Some(s) = s {
+        s.cancelar_descargas().await;
         s.ep.close().await;
     }
 }
@@ -280,6 +281,7 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         hay_eventos: Notify::new(),
         pendiente: AtomicUsize::new(0),
         blobs: Mutex::default(),
+        conexiones: Cupos::default(),
     });
 
     if anfitrion {
@@ -401,7 +403,8 @@ impl Sala {
             .collect();
         for k in caidos {
             if let Some((tx, _)) = e.pendientes.remove(&k) {
-                let _ = tx.send(false);
+                let _ = tx.send(Decision::Retirada("revocado"));
+                self.evento(retirada(k, "revocado"));
             }
         }
         Ok(Value::Null)
@@ -410,10 +413,19 @@ impl Sala {
     fn decidir(&self, p: &Value, si: bool) -> Result<Value, Fallo> {
         self.solo_anfitrion()?;
         let k = param_clave(p, "clave")?;
-        let tx = self.estado.lock().unwrap().pendientes.remove(&k);
+        let mut e = self.estado.lock().unwrap();
+        let tx = e.pendientes.remove(&k);
         match tx {
-            Some((tx, _)) => {
-                let _ = tx.send(si);
+            Some((tx, id)) => {
+                e.terminar_billete(&id, true);
+                if si {
+                    e.anclados.insert(k);
+                }
+                let _ = tx.send(if si {
+                    Decision::Aceptar
+                } else {
+                    Decision::Rechazar
+                });
                 Ok(Value::Null)
             }
             None => fallo("desconocido", "Esa clave no está esperando aprobación."),
@@ -449,6 +461,9 @@ impl Sala {
                 "demasiado-grande",
                 "El mensaje pasa de 960 KiB: va como blob.",
             );
+        }
+        if marco::profundidad(datos) > marco::MAX_PROFUNDIDAD_PAR {
+            return fallo("invalid-parameters", "El mensaje pasa de 28 niveles.");
         }
         let e = self.estado.lock().unwrap();
         let destinos: Vec<EndpointId> = match p.get("a").and_then(Value::as_array) {
@@ -537,7 +552,9 @@ impl Sala {
             .iter()
             .map(|(k, par)| {
                 let (via, rtt) = via(&par.conn);
-                json!({"clave": hex::de_clave(k), "via": via, "rttMs": rtt})
+                let stats = par.conn.stats();
+                json!({"clave": hex::de_clave(k), "via": via, "rttMs": rtt,
+                    "enviadosB": stats.udp_tx.bytes, "recibidosB": stats.udp_rx.bytes})
             })
             .collect();
         json!({"clave": hex::de_clave(&self.ep.id()), "direcciones": self.direcciones(), "rol": if self.es_anfitrion() {"anfitrion"} else {"invitado"}, "pares": pares})
@@ -643,9 +660,17 @@ impl Sala {
             conn.close(VarInt::from_u32(cierre::SALUDO), b"sin saludo");
             return;
         };
-        let hola = match tokio::time::timeout(ESPERA_HOLA, marco::leer(&mut recibo, MAX_HOLA)).await
+        let hola = match tokio::time::timeout(
+            ESPERA_HOLA,
+            marco::leer(&mut recibo, MAX_HOLA, marco::MAX_PROFUNDIDAD_PAR),
+        )
+        .await
         {
             Ok(Ok(h)) if marco::texto(&h, "type") == Some("hola") => h,
+            Ok(Err(ErrorMarco::Largo | ErrorMarco::Json)) => {
+                conn.close(VarInt::from_u32(cierre::MARCO), b"marco");
+                return;
+            }
             _ => {
                 conn.close(VarInt::from_u32(cierre::SALUDO), b"saludo invalido");
                 return;
@@ -680,8 +705,18 @@ impl Sala {
 
         let anclado = self.estado.lock().unwrap().anclados.contains(&quien);
         if !anclado {
-            let billete_id = match self.comprobar_billete(&hola, quien) {
-                Ok(id) => Some(id),
+            // Comprobar e insertar, incluido el evento, bajo el mismo cerrojo.
+            let solicitud = {
+                let mut e = self.estado.lock().unwrap();
+                let r = e.solicitar(&hola, quien);
+                if let Ok((id, _)) = &r {
+                    self.evento(json!({"tipo":"solicitud","clave":hex::de_clave(&quien),
+                        "alias":alias,"appVersion":self.app_version,"billete":id}));
+                }
+                r
+            };
+            let (_, rx) = match solicitud {
+                Ok(r) => r,
                 Err(motivo) => {
                     if motivo == "billete-invalido" {
                         self.demasiados_falsos(&origen, true);
@@ -689,64 +724,36 @@ impl Sala {
                     return despedir(conn, &mut envio, &adios(motivo, String::new())).await;
                 }
             };
-            let (tx, rx) = oneshot::channel();
-            self.estado
-                .lock()
-                .unwrap()
-                .pendientes
-                .insert(quien, (tx, billete_id.clone().unwrap_or_default()));
-            self.evento(
-                json!({"tipo":"solicitud","clave":hex::de_clave(&quien),"alias":alias,
-                "appVersion":self.app_version,"billete":billete_id}),
-            );
-            let mut sonda = [0u8; 1];
-            let decision = tokio::select! {
-                d = rx => d.ok(),
-                _ = tokio::time::sleep(ESPERA_APROBACION) => None,
-                _ = conn.closed() => None,
-                // Mientras espera, el invitado no manda nada: si el canal da algo (cierre, reinicio), se fue.
-                _ = recibo.read(&mut sonda) => None,
-            };
-            let aceptado = {
-                let mut e = self.estado.lock().unwrap();
-                e.pendientes.remove(&quien);
-                let id = billete_id.as_deref().unwrap_or_default();
-                if let Some(b) = e.billetes.get_mut(id).filter(|b| b.un_uso) {
-                    b.uso = if decision.is_some() {
-                        Uso::Gastado
-                    } else {
-                        Uso::Libre
-                    };
-                }
-                if decision == Some(true) {
-                    e.anclados.insert(quien);
-                }
-                decision
-            };
-            match aceptado {
-                Some(true) => {}
-                Some(false) => {
+            let decision = self
+                .esperar_aprobacion(quien, rx, &conn, &mut recibo, ESPERA_APROBACION)
+                .await;
+            match decision {
+                Decision::Aceptar => {}
+                Decision::Rechazar => {
                     return despedir(conn, &mut envio, &adios("rechazado", String::new())).await;
                 }
-                None => {
+                Decision::Retirada("revocado") => {
+                    return despedir(conn, &mut envio, &adios("billete-invalido", String::new()))
+                        .await;
+                }
+                Decision::Retirada(_) => {
                     conn.close(VarInt::from_u32(cierre::CERRO), b"sin respuesta");
                     return;
                 }
             }
         }
 
-        let llena = {
-            let e = self.estado.lock().unwrap();
-            !e.pares.contains_key(&quien) && e.pares.len() >= MAX_CONEXIONES
-        };
-        if llena {
+        let Some(reserva) = self
+            .conexiones
+            .reservar(quien, MAX_CONEXIONES, MAX_CONEXIONES)
+        else {
             return despedir(
                 conn,
                 &mut envio,
                 &adios("llena", "La sala está llena.".into()),
             )
             .await;
-        }
+        };
         if envio
             .write_all(&marco::armar(&json!({"type":"admitido"})))
             .await
@@ -756,35 +763,43 @@ impl Sala {
         }
         let (via, _) = via(&conn);
         self.evento(json!({"tipo":"entra","clave":hex::de_clave(&quien),"alias":alias,"via":via}));
-        self.registrar(conn, envio, recibo);
+        self.registrar(conn, envio, recibo, reserva);
     }
 
-    /// El billete del `hola`: vivo, con su secreto, no caducado y, si es de un uso, libre. Lo deja en trámite.
-    fn comprobar_billete(&self, hola: &Value, quien: EndpointId) -> Result<String, &'static str> {
-        let id = marco::texto(hola, "billete")
-            .filter(|i| billete::es_id(i))
-            .ok_or("billete-invalido")?;
-        let secreto = marco::texto(hola, "secreto")
-            .and_then(hex::bytes32)
-            .ok_or("billete-invalido")?;
-        let mut e = self.estado.lock().unwrap();
-        if e.pendientes.len() >= MAX_PENDIENTES || e.pendientes.contains_key(&quien) {
-            return Err("ocupado");
+    async fn esperar_aprobacion(
+        &self,
+        quien: EndpointId,
+        mut rx: oneshot::Receiver<Decision>,
+        conn: &Connection,
+        recibo: &mut RecvStream,
+        plazo: Duration,
+    ) -> Decision {
+        let mut sonda = [0u8; 1];
+        let decision = tokio::select! {
+            biased;
+            d = &mut rx => return d.unwrap_or(Decision::Retirada("se-fue")),
+            _ = tokio::time::sleep(plazo) => Decision::Retirada("tiempo"),
+            _ = conn.closed() => Decision::Retirada("se-fue"),
+            _ = recibo.read(&mut sonda) => Decision::Retirada("se-fue"),
+        };
+        let Decision::Retirada(motivo) = decision else {
+            unreachable!()
+        };
+        let retirada = {
+            let mut e = self.estado.lock().unwrap();
+            if let Some(ev) = e.retirar(quien, motivo) {
+                self.evento(ev);
+                true
+            } else {
+                false
+            }
+        };
+        // Si aceptar/rechazar/revocar ganó la carrera, respeta esa decisión.
+        if retirada {
+            decision
+        } else {
+            rx.await.unwrap_or(decision)
         }
-        let b = e.billetes.get_mut(id).ok_or("billete-invalido")?;
-        let igual = b
-            .secreto
-            .iter()
-            .zip(secreto.iter())
-            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-            == 0;
-        if !igual || b.caduca < ahora() || (b.un_uso && b.uso != Uso::Libre) {
-            return Err("billete-invalido");
-        }
-        if b.un_uso {
-            b.uso = Uso::EnTramite;
-        }
-        Ok(id.to_string())
     }
 
     // ---------- invitado: entrar ----------
@@ -853,7 +868,7 @@ impl Sala {
             .map_err(|e| Fallo("sin-conexion", e.to_string()))?;
         let r = tokio::time::timeout(
             ESPERA_APROBACION + ESPERA_HOLA,
-            marco::leer(&mut recibo, MAX_HOLA),
+            marco::leer(&mut recibo, MAX_HOLA, marco::MAX_PROFUNDIDAD_PAR),
         )
         .await
         .map_err(|_| Fallo("rechazado", "El anfitrión no respondió.".into()))?;
@@ -873,7 +888,11 @@ impl Sala {
         match marco::texto(&r, "type") {
             Some("admitido") => {
                 let (via, _) = via(&conn);
-                self.registrar(conn, envio, recibo);
+                let reserva = self
+                    .conexiones
+                    .reservar(anfitrion, MAX_CONEXIONES, MAX_CONEXIONES)
+                    .ok_or(Fallo("ocupado", "No hay cupos de conexión.".into()))?;
+                self.registrar(conn, envio, recibo, reserva);
                 Ok(json!({"anfitrion": hex::de_clave(&anfitrion), "via": via,
                     "anfitrionDirecciones": dirs_anfitrion, "direcciones": self.direcciones()}))
             }
@@ -903,6 +922,7 @@ impl Sala {
         conn: Connection,
         mut envio: SendStream,
         mut recibo: RecvStream,
+        reserva: Reserva,
     ) {
         let quien = conn.remote_id();
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -946,22 +966,19 @@ impl Sala {
         let sala = self.clone();
         tokio::spawn(async move {
             let clave = hex::de_clave(&quien);
-            let mut fichas = RITMO_RAFAGA;
-            let mut ultimo = Instant::now();
+            let _reserva = reserva;
+            let mut marcos = Cubo::marcos(sala.es_anfitrion(), Instant::now());
+            let mut bytes = Cubo::nuevo(BYTES_SEGUNDO, BYTES_SEGUNDO, Instant::now());
             let cierre_propio = loop {
-                match marco::leer(&mut recibo, marco::MAX_PAR).await {
+                match marco::leer_limitado(&mut recibo, &mut bytes).await {
                     Ok(datos) => {
-                        let t = Instant::now();
-                        fichas = (fichas + t.duration_since(ultimo).as_secs_f64() * RITMO_MEDIO)
-                            .min(RITMO_RAFAGA);
-                        ultimo = t;
-                        // Solo el anfitrión limita: él reparte lo de todos, así que un invitado recibe más de 100/s.
-                        if sala.es_anfitrion() && fichas < 1.0 {
+                        if marcos.tomar(1, Instant::now()).is_err() {
                             break Some(cierre::RITMO);
                         }
-                        fichas -= 1.0;
                         // Si la app no lee, se deja de leer el canal y QUIC frena al otro lado.
-                        while sala.pendiente.load(Ordering::Relaxed) > MAX_EVENTOS_BYTES {
+                        while sala.pendiente.load(Ordering::Relaxed) > MAX_EVENTOS_BYTES
+                            && conn.close_reason().is_none()
+                        {
                             tokio::time::sleep(Duration::from_millis(10)).await;
                         }
                         let n = serde_json::to_vec(&datos).map(|v| v.len()).unwrap_or(0);
@@ -1051,4 +1068,61 @@ fn via(conn: &Connection) -> (&'static str, u64) {
         }
     }
     ("directo", 0)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Decision {
+    Aceptar,
+    Rechazar,
+    Retirada(&'static str),
+}
+
+fn retirada(quien: EndpointId, motivo: &str) -> Value {
+    json!({"tipo":"solicitud-retirada","clave":hex::de_clave(&quien),"motivo":motivo})
+}
+
+impl Estado {
+    fn solicitar(
+        &mut self,
+        hola: &Value,
+        quien: EndpointId,
+    ) -> Result<(String, oneshot::Receiver<Decision>), &'static str> {
+        let id = marco::texto(hola, "billete")
+            .filter(|i| billete::es_id(i))
+            .ok_or("billete-invalido")?;
+        let secreto = marco::texto(hola, "secreto")
+            .and_then(hex::bytes32)
+            .ok_or("billete-invalido")?;
+        if self.pendientes.len() >= MAX_PENDIENTES || self.pendientes.contains_key(&quien) {
+            return Err("ocupado");
+        }
+        let b = self.billetes.get_mut(id).ok_or("billete-invalido")?;
+        let igual = b
+            .secreto
+            .iter()
+            .zip(secreto.iter())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0;
+        if !igual || b.caduca < ahora() || (b.un_uso && b.uso != Uso::Libre) {
+            return Err("billete-invalido");
+        }
+        if b.un_uso {
+            b.uso = Uso::EnTramite;
+        }
+        let (tx, rx) = oneshot::channel();
+        self.pendientes.insert(quien, (tx, id.to_string()));
+        Ok((id.to_string(), rx))
+    }
+
+    fn terminar_billete(&mut self, id: &str, gastar: bool) {
+        if let Some(b) = self.billetes.get_mut(id).filter(|b| b.un_uso) {
+            b.uso = if gastar { Uso::Gastado } else { Uso::Libre };
+        }
+    }
+
+    fn retirar(&mut self, quien: EndpointId, motivo: &str) -> Option<Value> {
+        let (_, id) = self.pendientes.remove(&quien)?;
+        self.terminar_billete(&id, false);
+        Some(retirada(quien, motivo))
+    }
 }

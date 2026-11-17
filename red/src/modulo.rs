@@ -71,7 +71,7 @@ pub async fn atender<S: AsyncRead + AsyncWrite + Send + 'static>(flujo: S) -> i3
 async fn bucle<R: AsyncRead + Unpin>(lector: &mut R, tx: &mpsc::UnboundedSender<Value>) -> i32 {
     let hello = match tokio::time::timeout(
         Duration::from_secs(30),
-        marco::leer(lector, marco::MAX_LOCAL),
+        marco::leer(lector, marco::MAX_LOCAL, marco::MAX_PROFUNDIDAD),
     )
     .await
     {
@@ -104,7 +104,7 @@ async fn bucle<R: AsyncRead + Unpin>(lector: &mut R, tx: &mpsc::UnboundedSender<
 
     let activas: Arc<Mutex<HashMap<i64, Arc<Notify>>>> = Arc::default();
     loop {
-        let m = match marco::leer(lector, marco::MAX_LOCAL).await {
+        let m = match marco::leer(lector, marco::MAX_LOCAL, marco::MAX_PROFUNDIDAD).await {
             Ok(m) => m,
             Err(ErrorMarco::Fin) => return 0,
             Err(_) => return 2,
