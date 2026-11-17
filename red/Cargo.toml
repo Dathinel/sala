@@ -1,0 +1,21 @@
+[package]
+name = "dathinel-red"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+description = "Transporte de Sala: iroh detrás del protocolo de módulos v1"
+publish = false
+
+[dependencies]
+iroh = { version = "=1.4.1", default-features = false, features = ["portmapper", "tls-ring", "fast-apple-datapath"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+rand = "0.9"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

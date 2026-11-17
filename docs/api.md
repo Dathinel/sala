@@ -153,7 +153,7 @@ await invitado.EnviarAsync(datos, reservas: ["pista:A2"]);       // vuelve con e
 | Miembro | Qué hace |
 |---|---|
 | `HospedarAsync(identidad, opciones, anclados, validar, epoca = 1, seq = 0)` | Abre la sala. `anclados`: los miembros que la app guardó (clave, alias, rol). `validar`: `Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>` que la sala llama **en orden**, una carga cada vez, antes de darle número; asíncrono para no ocupar un hilo (Unicomp regenera el CAD) |
-| `UnirseAsync(identidad, opciones, billete \| anfitrion, ultimoSeq = 0, epoca = 0)` | Entra; vuelve tras la aprobación y el `bienvenida` |
+| `UnirseAsync(identidad, opciones, billete \| anfitrion, ultimoSeq = 0, epoca = 0, suscribir)` | Entra; vuelve tras la aprobación y el `bienvenida`. `suscribir(sala)` se llama antes de conectar, para no perder los `orden` que reponen justo después de la bienvenida (igual en `HospedarAsync`) |
 | `NuevoBilleteAsync`, `RevocarAsync`, `AceptarAsync(clave, rol)`, `RechazarAsync`, `ExpulsarAsync`, `CambiarRolAsync` | Anfitrión |
 | `EnviarAsync(datos, reservas)` | Propone una carga. En el anfitrión pasa por el mismo `validar` sin red |
 | `EnviarDirectoAsync(a, datos)` | Mensaje de la app **fuera del orden**: ni se valida ni se numera ni entra en el historial; a un miembro o a todos (en el invitado, solo al anfitrión). Para el manifiesto de la instantánea al entrar o tras `desfasado`, pedir huellas sueltas o anunciar blobs |
@@ -231,7 +231,7 @@ Un par solo puede bajar lo que el otro ofreció; el que manda no elige ni ve rut
 |---|---|
 | Miembros | 16 en la capa; cada app pone su tope (Unicomp 8) |
 | `carga.datos` | 900 KiB; más grande, va como blob y la carga lleva la huella |
-| Cargas | **20/s por miembro**, ráfaga de 40: lo que pasa → `rechazado` `ritmo`; 3 s seguidos por encima → expulsión. Las apps mandan **una carga por paso de deshacer** (arrastrar, pegar o importar es una sola), y lo continuo (texto, arrastres) agrupado cada ~100 ms; la presencia va aparte |
+| Cargas | **20/s por miembro**, ráfaga de 40: lo que pasa → `rechazado` `ritmo`; 60 rechazos por ritmo en 3 s (seguir al doble del ritmo) → expulsión. Las apps mandan **una carga por paso de deshacer** (arrastrar, pegar o importar es una sola), y lo continuo (texto, arrastres) agrupado cada ~100 ms; la presencia va aparte |
 | Directos | 900 KiB; cuentan en el mismo ritmo que las cargas |
 | `validar` | `TopeValidar`, 30 s por defecto; al vencer, `rechazado` `tiempo` |
 | Reservas | 64 por miembro, `reservar` ≤ 5/s, 120 s sin actividad |

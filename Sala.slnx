@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Dathinel.Sala/Dathinel.Sala.csproj" />
+    <Project Path="src/Rodaje.Modules.Protocol/Rodaje.Modules.Protocol.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Dathinel.Sala.Tests/Dathinel.Sala.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,58 @@
+# Compila y prueba dathinel-red (Rust) y Dathinel.Sala (C#) en Windows, Linux y macOS con el entorno fijado de
+# build/preparar-entorno.ps1 (las mismas versiones y huellas que en el equipo de Daniel).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .entorno/cargo/registry
+            red/target
+          key: cargo-${{ matrix.os }}-${{ hashFiles('red/Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Entorno (.NET, Rust, cargo-deny)
+        shell: pwsh
+        run: ./build/preparar-entorno.ps1
+
+      - name: Rust
+        working-directory: red
+        run: |
+          source ../build/entorno.sh
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --locked
+
+      - name: Licencias y avisos de crates
+        if: runner.os == 'Linux'
+        working-directory: red
+        run: |
+          source ../build/entorno.sh
+          cargo deny --locked check licenses bans sources advisories
+
+      - name: C#
+        run: |
+          source build/entorno.sh
+          dotnet build Sala.slnx -warnaserror
+          dotnet test Sala.slnx --no-build --logger "console;verbosity=normal" --blame-hang-timeout 5m
