@@ -602,6 +602,7 @@ public sealed partial class Sala : IAsyncDisposable
     {
         if (_fin.IsCancellationRequested) return;
         await _fin.CancelAsync().ConfigureAwait(false);
+        TerminarDescargas();
         _porOrdenar.Writer.TryComplete();
         try
         {

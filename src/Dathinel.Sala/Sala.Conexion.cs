@@ -83,7 +83,7 @@ public sealed partial class Sala
     public async Task ConfirmarInstantaneaAsync(long epoca, long seq, CancellationToken ct = default)
     {
         if (EsAnfitrion) throw new SalaException("invalid-parameters", "El anfitrión no confirma instantáneas.");
-        if (seq < 0) throw new ArgumentOutOfRangeException(nameof(seq));
+        ArgumentOutOfRangeException.ThrowIfNegative(seq);
         lock (_cerrojo)
         {
             if (epoca < Epoca) throw new SalaException("invalid-parameters", $"La instantánea es de la época {epoca} y la sala ya va por la {Epoca}.");

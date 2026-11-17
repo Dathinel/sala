@@ -412,6 +412,43 @@ public sealed class HostilesTests
     }
 
     [Fact]
+    public async Task El_marco_mas_hondo_que_admite_la_red_llega_a_la_app_sin_romper_la_tuberia()
+    {
+        await using Sala anf = await AnfitrionAsync();
+        await using Crudo malo = await Crudo.EntrarAsync(anf);
+        // Carga de 27 niveles dentro del marco: 28, el máximo entre pares; con los 4 envoltorios locales, 32.
+        string honda = "{\"a\":" + new string('[', 26) + new string(']', 26) + "}";
+        JsonObject c = Carga(Guid.NewGuid(), 0);
+        c["datos"] = JsonNode.Parse(honda);
+        await malo.MandarAsync(c);
+        await HastaQue(() => anf.Seq == 1, que: "entra");
+        // Uno más ya no sale de su proceso: antes llegaba al anfitrión y le rompía la tubería local.
+        c["datos"] = JsonNode.Parse("{\"a\":" + new string('[', 27) + new string(']', 27) + "}");
+        SalaException e = await Assert.ThrowsAsync<SalaException>(() => malo.MandarAsync(c));
+        Assert.Equal("invalid-parameters", e.Codigo);
+        await malo.MandarAsync(Carga(Guid.NewGuid(), 1));
+        await HastaQue(() => anf.Seq == 2, que: "la sala sigue");
+    }
+
+    [Fact]
+    public async Task Quien_se_va_esperando_aprobacion_retira_su_solicitud()
+    {
+        await using Sala anf = await Sala.HospedarAsync(Identidad.Nueva(), Opciones("Ana"), [], TodoVale);
+        TaskCompletionSource<string> pide = new(), retira = new();
+        anf.SolicitudRecibida += s => pide.TrySetResult(s.Clave);
+        anf.SolicitudRetirada += c => retira.TrySetResult(c);
+        using CancellationTokenSource corta = new();
+        Task entra = Sala.UnirseAsync(Identidad.Nueva(), Opciones("Luis"), await anf.NuevoBilleteAsync(TimeSpan.FromMinutes(10)), ct: corta.Token);
+        string clave = await pide.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        await corta.CancelAsync();
+        await Assert.ThrowsAnyAsync<Exception>(() => entra);
+        Assert.Equal(clave, await retira.Task.WaitAsync(TimeSpan.FromSeconds(20)));
+        // Ya no está esperando: aceptarla ahora no la deja entrar.
+        SalaException e = await Assert.ThrowsAsync<SalaException>(() => anf.AceptarAsync(clave, Rol.Editar));
+        Assert.Equal("desconocido", e.Codigo);
+    }
+
+    [Fact]
     public void La_cuota_deja_pasar_el_ritmo_rechaza_el_exceso_y_expulsa_si_sigue()
     {
         Sala.Cuota c = new();
