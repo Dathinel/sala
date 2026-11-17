@@ -402,7 +402,7 @@ public sealed class HostilesTests
             if (Interlocked.Increment(ref sincronizar) > 1) return;
             await M(Bienvenida(1, clave));
             // Como si el anfitrión se hubiera saltado el orden 1 por cola llena: solo anuncia el seq.
-            await M(new JsonObject { ["type"] = "seq", ["seq"] = 1 });
+            await M(new JsonObject { ["type"] = "seq", ["epoca"] = 1, ["seq"] = 1 });
         });
         await using Sala _i = inv;
         await using ProcesoRed _h = hostil;
@@ -423,8 +423,9 @@ public sealed class HostilesTests
         await malo.MandarAsync(c);
         await HastaQue(() => anf.Seq == 1, que: "entra");
         // Uno más ya no sale de su proceso: antes llegaba al anfitrión y le rompía la tubería local.
-        c["datos"] = JsonNode.Parse("{\"a\":" + new string('[', 27) + new string(']', 27) + "}");
-        SalaException e = await Assert.ThrowsAsync<SalaException>(() => malo.MandarAsync(c));
+        JsonObject d = Carga(Guid.NewGuid(), 0);
+        d["datos"] = JsonNode.Parse("{\"a\":" + new string('[', 27) + new string(']', 27) + "}");
+        SalaException e = await Assert.ThrowsAsync<SalaException>(() => malo.MandarAsync(d));
         Assert.Equal("invalid-parameters", e.Codigo);
         await malo.MandarAsync(Carga(Guid.NewGuid(), 1));
         await HastaQue(() => anf.Seq == 2, que: "la sala sigue");

@@ -148,6 +148,7 @@ public sealed class ConexionTests
         await HastaQue(() => luis.Seq == 5 && luis.Suplente == luis.Clave, que: "luis al día");
         await ana.TraspasarAsync(luis.Clave);
         await HastaQue(() => luis.EsAnfitrion && ana.Anfitrion == luis.Clave, segundos: 40, que: "luis manda");
+        luis.SolicitudRecibida += s => _ = luis.AceptarAsync(s.Clave, Rol.Editar);
 
         // Eva llega de cero al anfitrión nuevo: los cinco, aceptados en la época 1, le llegan aunque mande la 2.
         ConcurrentQueue<Ordenado> enEva = new();

@@ -296,6 +296,11 @@ public sealed partial class Sala
         {
             throw new SalaException("traspaso", "Traspaso cancelado: la sala sigue aquí.");
         }
+        catch (Exception ex) when (!hecho && ruta is not null && ex is SalaException { Codigo: not "traspaso" } or IOException or UnauthorizedAccessException)
+        {
+            // Cualquier fallo antes de la confirmación (el sucesor se fue, disco, red): nada cambia.
+            throw new SalaException("traspaso", "El traspaso no se completó: la sala sigue aquí. " + ex.Message, ex);
+        }
         finally
         {
             lock (_cerrojo) _traspaso = null;
@@ -317,8 +322,8 @@ public sealed partial class Sala
         {
             _cambiandoProceso = false;
         }
-        if (!await ReconectarAsync(procesoNuevo: false).ConfigureAwait(false))
-            throw new SalaException("sin-conexion", "No se pudo entrar en la sala del nuevo anfitrión.");
+        // La reconexión sigue sola (Reconectada avisa): el traspaso ya está hecho.
+        _ = ReconectarAsync(procesoNuevo: false);
     }
 
     private async Task HastaQueSalgaAsync(string clave, TimeSpan tope)
