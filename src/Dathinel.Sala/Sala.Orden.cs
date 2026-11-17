@@ -17,6 +17,7 @@ public sealed partial class Sala
     private readonly Dictionary<string, Recuerdo> _vistos = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int N, long Bytes)> _enCola = new(StringComparer.Ordinal);
     private long _colaBytes;
+    private volatile bool _traspasando;
 
     private async Task DeInvitadoAsync(string de, JsonElement m)
     {
