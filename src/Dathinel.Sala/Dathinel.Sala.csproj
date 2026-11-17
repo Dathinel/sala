@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Cliente de sala sobre el proceso dathinel-red (docs/api.md §5). -->
+  <PropertyGroup>
+    <RootNamespace>Dathinel.Sala</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Rodaje.Modules.Protocol\Rodaje.Modules.Protocol.csproj" />
+    <InternalsVisibleTo Include="Dathinel.Sala.Tests" />
+    <EmbeddedResource Include="palabras.txt" LogicalName="Dathinel.Sala.palabras.txt" />
+  </ItemGroup>
+
+</Project>

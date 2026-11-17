@@ -46,7 +46,7 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 | `rechazar` | anfitrión | `clave`, `motivo`? | — |
 | `expulsar` | anfitrión | `clave`, `motivo`?, `vetar` (sí por defecto) | — Cierra su conexión; con `vetar`, la saca de anclados y ningún billete la vuelve a dejar entrar en esta sala |
 | `unirse` | invitado | `identidad`, `app`, `appVersion`, `alias`, `red`, `carpeta`, y **o** `billete` **o** `anfitrion` + `direcciones`? (para volver sin billete, ya anclado) | `anfitrion` (clave), `via` (`directo` o `rele`). **Llamada larga:** espera la aprobación hasta 10 min; se cancela con `cancel` |
-| `enviar` | los dos | `a` (lista de claves; vacía o ausente = todos los conectados; en el invitado solo vale el anfitrión), `datos` (objeto JSON, la carga de la sala, ≤ 960 KiB serializado) | `encolados` (cuántos destinos) o `ocupado-red` |
+| `enviar` | los dos | `a` (lista de claves; vacía o ausente = todos los conectados; en el invitado solo vale el anfitrión), `datos` (objeto JSON, la carga de la sala, ≤ 960 KiB serializado) | `encolados` (cuántos destinos) y `llenos` (claves que se saltaron). A destinos concretos es todo o nada (`ocupado-red`); en una difusión se salta a quien tiene la cola llena, que repone lo perdido al ver el hueco y `sincronizar` |
 | `recibir` | los dos | `max` (eventos, 1–1024) | `eventos` (§2.2). **Llamada larga:** vuelve en cuanto hay algo o vacía a los 25 s; una sola a la vez. El lote se corta antes de pasar de 1000 KiB serializado: un `mensaje` de 960 KiB va solo, y lo que no cabe sale en la siguiente |
 | `blob-ofrecer` | los dos | `blobs`: lista (1–1024) de `{huella (SHA-256, 64 hex), tamano, ruta}` (archivos **locales** de quien ofrece, dentro de `carpeta`) | — El proceso los sirve a los pares que los pidan mientras estén ofrecidos. El archivo **no debe cambiar** mientras esté ofrecido: se lee al servirlo, y quien pide comprueba la huella (si cambió, la descarga falla con `huella`). Lo seguro es ofrecer copias de un almacén por contenido dentro de la carpeta de sala |
 | `blob-retirar` | los dos | `huellas` (lista) | — |
@@ -153,7 +153,7 @@ await invitado.EnviarAsync(datos, reservas: ["pista:A2"]);       // vuelve con e
 | Miembro | Qué hace |
 |---|---|
 | `HospedarAsync(identidad, opciones, anclados, validar, epoca = 1, seq = 0)` | Abre la sala. `anclados`: los miembros que la app guardó (clave, alias, rol). `validar`: `Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>` que la sala llama **en orden**, una carga cada vez, antes de darle número; asíncrono para no ocupar un hilo (Unicomp regenera el CAD) |
-| `UnirseAsync(identidad, opciones, billete \| anfitrion, ultimoSeq = 0, epoca = 0)` | Entra; vuelve tras la aprobación y el `bienvenida` |
+| `UnirseAsync(identidad, opciones, billete \| anfitrion, ultimoSeq = 0, epoca = 0, suscribir)` | Entra; vuelve tras la aprobación y el `bienvenida`. `suscribir(sala)` se llama antes de conectar, para no perder los `orden` que reponen justo después de la bienvenida (igual en `HospedarAsync`) |
 | `NuevoBilleteAsync`, `RevocarAsync`, `AceptarAsync(clave, rol)`, `RechazarAsync`, `ExpulsarAsync`, `CambiarRolAsync` | Anfitrión |
 | `EnviarAsync(datos, reservas)` | Propone una carga. En el anfitrión pasa por el mismo `validar` sin red |
 | `EnviarDirectoAsync(a, datos)` | Mensaje de la app **fuera del orden**: ni se valida ni se numera ni entra en el historial; a un miembro o a todos (en el invitado, solo al anfitrión). Para el manifiesto de la instantánea al entrar o tras `desfasado`, pedir huellas sueltas o anunciar blobs |
@@ -231,7 +231,7 @@ Un par solo puede bajar lo que el otro ofreció; el que manda no elige ni ve rut
 |---|---|
 | Miembros | 16 en la capa; cada app pone su tope (Unicomp 8) |
 | `carga.datos` | 900 KiB; más grande, va como blob y la carga lleva la huella |
-| Cargas | **20/s por miembro**, ráfaga de 40: lo que pasa → `rechazado` `ritmo`; 3 s seguidos por encima → expulsión. Las apps mandan **una carga por paso de deshacer** (arrastrar, pegar o importar es una sola), y lo continuo (texto, arrastres) agrupado cada ~100 ms; la presencia va aparte |
+| Cargas | **20/s por miembro**, ráfaga de 40: lo que pasa → `rechazado` `ritmo`; 60 rechazos por ritmo en 3 s (seguir al doble del ritmo) → expulsión. Las apps mandan **una carga por paso de deshacer** (arrastrar, pegar o importar es una sola), y lo continuo (texto, arrastres) agrupado cada ~100 ms; la presencia va aparte |
 | Directos | 900 KiB; cuentan en el mismo ritmo que las cargas |
 | `validar` | `TopeValidar`, 30 s por defecto; al vencer, `rechazado` `tiempo` |
 | Reservas | 64 por miembro, `reservar` ≤ 5/s, 120 s sin actividad |
