@@ -5,7 +5,7 @@ Trabajo en grupo para las aplicaciones de Dathinel ([Rodaje](https://github.com/
 Contiene la parte común: el proceso `dathinel-red` (Rust, `red/`), el cliente `Dathinel.Sala` (C#, `src/Dathinel.Sala`) y el protocolo de módulos que nació en Rodaje (`src/Rodaje.Modules.Protocol`). Lo propio de cada aplicación (qué es un cambio, cómo se valida) se queda en ella. Se usa como submódulo.
 
 - Contrato: [docs/api.md](docs/api.md). Modelo de amenazas: [docs/seguridad.md](docs/seguridad.md).
-- Hecho: billetes, aprobación, claves ancladas, roles, orden central con validación de la app, mensajes directos, límites de tamaño y ritmo. Falta: reservas, presencia, traspaso, reconexión automática y blobs.
+- Estado y siguiente paso: [CLAUDE.md](CLAUDE.md). Historia del contrato: [docs/historia.md](docs/historia.md).
 
 ## Compilar y probar
 
@@ -17,6 +17,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build\preparar-entorno.ps1
 cd red; cargo build; cargo test; cd ..
 dotnet test Sala.slnx
 ```
+
+Consumidor mínimo (el mismo que la CI publica con Native AOT): `dotnet run --project ejemplos/Consumidor -- red/target/debug/dathinel-red`.
 
 Las pruebas de C# abren dos y tres `dathinel-red` reales en el mismo equipo: 10 000 mensajes en orden, billetes gastados, revocados y de otra app, roles, cargas con rutas, ritmo, épocas viejas. La CI las corre en Windows, Linux y macOS.
 
