@@ -2,7 +2,7 @@
 
 Contrato de `dathinel-red` (proceso de Rust) y de `Dathinel.Sala` (biblioteca de C#), la capa común de trabajo en grupo de Rodaje y Unicomp. Parte de D-067 de Rodaje (`docs/propuestas/colaboracion.md` §2 y §3.4) y de D-017 de Unicomp (`docs/diseno-equipo-animacion-plataformas.md` §8.6). Lo que no está aquí es de cada app.
 
-Estado: revisado por la sesión de Unicomp (16-nov-2026, buzón `coordinacion-rodaje-unicomp.md`): entran el mensaje `directo`, `validar` asíncrono con tope, `blob-ofrecer` en lista, el historial en el traspaso y la recomendación de una carga por paso de deshacer.
+Estado: v1 implementada entera en el bloque 2 (17-nov-2026). Revisado por la sesión de Unicomp (16-nov-2026, buzón `coordinacion-rodaje-unicomp.md`): entran el mensaje `directo`, `validar` asíncrono con tope, `blob-ofrecer` en lista, el historial en el traspaso y la recomendación de una carga por paso de deshacer.
 
 ## 0. En una página
 
@@ -40,19 +40,20 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 | Función | Lado | Parámetros | Resultado |
 |---|---|---|---|
 | `abrir-sala` | anfitrión | `identidad` (64 hex, clave **privada**), `app`, `appVersion`, `red` (§2.1), `carpeta` (ruta absoluta de la carpeta de sala de la app), `anclados` (lista de claves que entran sin billete) | `clave` (la pública), `direcciones` |
-| `billete` | anfitrión | `caducaEn` (segundos, 60–604 800; 86 400 por defecto), `unUso` (sí por defecto) | `billete` (texto, §4), `id` |
+| `billete` | anfitrión | `caducaEn` (segundos, 5–604 800; 86 400 por defecto), `unUso` (sí por defecto) | `billete` (texto, §4), `id` |
 | `revocar` | anfitrión | `id`? | — Sin `id`, invalida **todos** los billetes vivos; con `id`, solo ese. Los miembros ya anclados siguen |
 | `aceptar` | anfitrión | `clave` | — La clave pasa a anclada mientras viva el proceso; la app la guarda para la próxima vez |
 | `rechazar` | anfitrión | `clave`, `motivo`? | — |
 | `expulsar` | anfitrión | `clave`, `motivo`?, `vetar` (sí por defecto) | — Cierra su conexión; con `vetar`, la saca de anclados y ningún billete la vuelve a dejar entrar en esta sala |
-| `unirse` | invitado | `identidad`, `app`, `appVersion`, `alias`, `red`, `carpeta`, y **o** `billete` **o** `anfitrion` + `direcciones`? (para volver sin billete, ya anclado) | `anfitrion` (clave), `via` (`directo` o `rele`). **Llamada larga:** espera la aprobación hasta 10 min; se cancela con `cancel` |
+| `unirse` | invitado | `identidad`, `app`, `appVersion`, `alias`, `red`, `carpeta`, y **o** `billete` **o** `anfitrion` + `direcciones`? (para volver sin billete, ya anclado) | `anfitrion` (clave), `via` (`directo` o `rele`), `anfitrionDirecciones`, `direcciones` (las propias). **Llamada larga:** espera la aprobación hasta 10 min; se cancela con `cancel`. Un invitado puede volver a llamarla en el mismo proceso (reconexión o cambio de anfitrión): conserva su endpoint y sus direcciones |
+| `ascender` | invitado | `anclados` | `clave`, `direcciones`. El invitado pasa a anfitrión **con el mismo endpoint** (las direcciones que ya conocen los demás): corta con el anfitrión anterior (cierre `traspaso`) y empieza a aceptar conexiones. Lo usan el traspaso y el suplente |
 | `enviar` | los dos | `a` (lista de claves; vacía o ausente = todos los conectados; en el invitado solo vale el anfitrión), `datos` (objeto JSON, la carga de la sala, ≤ 960 KiB serializado) | `encolados` (cuántos destinos) y `llenos` (claves que se saltaron). A destinos concretos es todo o nada (`ocupado-red`); en una difusión se salta a quien tiene la cola llena, que repone lo perdido al ver el hueco y `sincronizar` |
 | `recibir` | los dos | `max` (eventos, 1–1024) | `eventos` (§2.2). **Llamada larga:** vuelve en cuanto hay algo o vacía a los 25 s; una sola a la vez. El lote se corta antes de pasar de 1000 KiB serializado: un `mensaje` de 960 KiB va solo, y lo que no cabe sale en la siguiente |
 | `blob-ofrecer` | los dos | `blobs`: lista (1–1024) de `{huella (SHA-256, 64 hex), tamano, ruta}` (archivos **locales** de quien ofrece, dentro de `carpeta`) | — El proceso los sirve a los pares que los pidan mientras estén ofrecidos. El archivo **no debe cambiar** mientras esté ofrecido: se lee al servirlo, y quien pide comprueba la huella (si cambió, la descarga falla con `huella`). Lo seguro es ofrecer copias de un almacén por contenido dentro de la carpeta de sala |
 | `blob-retirar` | los dos | `huellas` (lista) | — |
 | `blob-pedir` | los dos | `de` (clave), `huella`, `tamano` (exacto; > 4 GiB se rechaza sin abrir el stream), `destino` (ruta local que elige la app; tiene que quedar dentro de `carpeta` una vez resuelta, o `invalid-parameters`) | — Vuelve enseguida. El avance llega como evento `blob-avance` (≤ 4/s) y el final como `blob-fin`. Escribe en `destino.parte`, comprueba tamaño y SHA-256 y renombra; si no coincide, borra y da `huella` |
 | `blob-cancelar` | los dos | `huella` | — Corta esa descarga y borra el `.parte` |
-| `estado` | los dos | — | `clave`, `rol` (`anfitrion`/`invitado`), `pares`: `[{clave, via, rttMs, enviadosB, recibidosB}]` |
+| `estado` | los dos | — | `clave`, `direcciones`, `rol` (`anfitrion`/`invitado`), `pares`: `[{clave, via, rttMs, enviadosB, recibidosB}]` |
 | `cerrar` | los dos | `motivo`? | — Cierra todo y deja el proceso listo para salir |
 
 ### 2.1 `red`
@@ -62,7 +63,7 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 ```
 
 - `rele`: `"n0"` (relés públicos de n0, por defecto; Daniel, 15-nov), `"ninguno"` (solo red local o direcciones directas; la fase 1 de Rodaje), o una URL `https://…` de un relé propio (Preferencias de cada app).
-- `mdns`: descubrimiento en la red local (en iroh no viene activo). Apagado por defecto; Rodaje lo enciende en su fase 1.
+- `mdns`: descubrimiento en la red local con `iroh-mdns-address-lookup` 0.6.1 (de n0, MIT o Apache-2.0), servicio `dathinel-sala`. Encendido, el equipo **anuncia su clave en la red local** a quien escuche; sirve para entrar o volver sin direcciones. Apagado por defecto; Rodaje lo enciende en su fase 1.
 - `soloRele`: no intentar conexión directa, para no mostrar la IP a los pares. **A verificar** contra la API de iroh 1.4 en la fase de internet; si no se puede, la función falla con `invalid-parameters` en vez de prometerlo.
 
 ### 2.2 Eventos de `recibir`
@@ -164,6 +165,8 @@ await invitado.EnviarAsync(datos, reservas: ["pista:A2"]);       // vuelve con e
 | `Miembros`, `Epoca`, `Seq`, `Rol`, `EsAnfitrion` | Estado |
 | Eventos | `Solicitud`, `MiembroEntra`, `MiembroSale`, `Ordenado`, `Rechazado`, `Directo`, `ReservaCambia`, `Presencia`, `Desfasado`, `Superada`, `Cerrada` |
 
+`Identidad.CargarOCrear(archivo)` guarda la clave privada: en Windows cifrada con DPAPI del usuario actual; en Linux y macOS en un archivo 0600 (se rechaza si el grupo u otros pueden leerlo), sin llavero del sistema por ahora (Secret Service o Keychain serían el paso siguiente). Escritura atómica; un archivo dañado da `SalaException` `identidad` y nunca se pisa.
+
 `Huella.Palabras(clave)` da las cuatro palabras: SHA-256 de los 32 bytes de la clave, 44 primeros bits en cuatro grupos de 11, cada uno un índice en una lista propia de 2048 palabras en español (sin tildes ambiguas ni palabras que se confundan de viva voz). Encontrar otra clave con las mismas cuatro palabras cuesta del orden de 2⁴⁴ claves; la identidad sigue siendo la clave anclada, la huella es para compararla en voz alta.
 
 ### 5.2 Mensajes de sala
@@ -200,7 +203,7 @@ Nunca hay un mensaje para leer, listar o abrir archivos, ni para ejecutar nada. 
 ### 5.4 Reservas
 
 - Clave de reserva: texto de 1 a 128 caracteres `[a-z0-9:/._-]`, sin `..`, sin empezar por `/` ni terminar en `/`. Es una **etiqueta**, nunca una ruta: la sala no la abre ni la compara con nada del disco. Rodaje usa `pista:A2` y `proyecto`; Unicomp `seccion:cad/tapa`.
-- Suave: `reservar` da la reserva si está libre o ya es tuya; si es de otro, `reserva` sin cambio (y el evento dice de quién). Cada `carga` o `presencia` del dueño la renueva; se suelta sola a los **120 s** sin actividad, al salir el miembro, o con `soltar`.
+- Suave: `reservar` da la reserva si está libre o ya es tuya; si es de otro, `reserva` sin cambio (y el evento dice de quién). Cada `carga` o `presencia` del dueño la renueva; se suelta sola a los **120 s** sin actividad (`OpcionesSala.ReservaInactiva`), con `soltar` o al expulsar al dueño. **No** se suelta al caerse la conexión: así quien vuelve antes de los 120 s manda sus cargas pendientes sobre lo que tenía reservado.
 - Qué exige reserva y qué significa (`proyecto` excluye todo, por ejemplo) lo decide la app al llamar a `EnviarAsync` con `reservas` y en su `validar`.
 - Hasta 64 reservas por miembro; `reservar` ≤ 5/s.
 
@@ -212,7 +215,7 @@ Objeto opaco ≤ 4 KiB (cabezal y selección en Rodaje, cursor 3D en Unicomp). E
 
 - **Reconexión:** el invitado que pierde al anfitrión reintenta solo a 1, 2, 4… hasta 30 s, con `unirse` por `anfitrion` (ya anclado) y `sincronizar` con su `ultimoSeq`. Las cargas sin respuesta se reenvían con su mismo `id`. Lo que la app guarde mientras tanto (el registro de Rodaje, el de Unicomp) es suyo.
 - **Traspaso con el anfitrión conectado:** `TraspasarAsync(clave)` ofrece su historial de reposición (los últimos `orden`) como blob y manda `traspaso` (época + 1) con el `seq` actual y la huella de ese blob; el nuevo lo baja, abre `dathinel-red` como anfitrión con los mismos anclados y `epoca` nueva; los demás se reconectan a su clave. El viejo pasa a invitado.
-- **Anfitrión caído:** solo el `suplente` de la última `bienvenida`/`miembros` (por defecto, el más antiguo) puede `TomarAnfitrionAsync()`, y solo tras **60 s seguidos** sin anfitrión: abre con `epoca + 1`, el `seq` que tenía y los ids de los `orden` que recibió. Los demás lo buscan por su clave y sus `direcciones` **solo si ellos también perdieron al anfitrión**; quien sigue conectado al anfitrión de siempre se queda con él. Así una caída de un solo invitado no derroca a un anfitrión vivo: el suplente aislado se queda solo en su época, y al volver a ver al anfitrión de verdad la app lo trata como «dos anfitriones». Aquí no hay historial que pasar: el suplente repone desde lo que él recibió, y a quien le falte algo más viejo le llega `desfasado` y la app manda la instantánea con `directo` y blobs.
+- **Anfitrión caído:** solo el `suplente` de la última `bienvenida`/`miembros` (el invitado conectado más antiguo con rol editar que ya dio sus direcciones en `sincronizar`; `bienvenida` y `miembros` llevan `suplente {clave, direcciones}`) puede `TomarAnfitrionAsync()`, y solo tras **60 s seguidos** sin anfitrión (`OpcionesSala.EsperaSuplente`), con `ascender` en su mismo proceso: abre con `epoca + 1`, el `seq` que tenía y los ids de los `orden` que recibió. Los demás lo buscan por su clave y sus `direcciones` **solo si ellos también perdieron al anfitrión**; quien sigue conectado al anfitrión de siempre se queda con él. Así una caída de un solo invitado no derroca a un anfitrión vivo: el suplente aislado se queda solo en su época, y al volver a ver al anfitrión de verdad la app lo trata como «dos anfitriones». Aquí no hay historial que pasar: el suplente repone desde lo que él recibió, y a quien le falte algo más viejo le llega `desfasado` y la app manda la instantánea con `directo` y blobs.
 - **Dos anfitriones:** manda la época mayor; a igualdad, la clave menor. Un anfitrión que recibe un `sincronizar` con `epoca` mayor que la suya, o un invitado que ve un anfitrión con `epoca` menor, lanza `Superada(epoca, anfitrion)`: la app cierra esa sala, entra en la otra y trata lo confirmado desde la separación como «Cambios que no entraron» (Rodaje) o por su unión (Unicomp).
 
 ### 5.7 Blobs (canal aparte)

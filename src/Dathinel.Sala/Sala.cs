@@ -7,45 +7,48 @@ namespace Dathinel.Sala;
 
 /// <summary>
 /// Una sala de trabajo en grupo (docs/api.md §5): el anfitrión ordena cargas opacas que valida la app, y cada miembro
-/// las recibe en el mismo orden. Esta versión hace miembros y roles, billetes, aprobación, orden central, mensajes
-/// directos y reconexión manual; reservas, presencia, traspaso y blobs llegan en el siguiente bloque.
+/// las recibe en el mismo orden. Partes: este archivo (abrir, mandar, leer), <c>Sala.Orden.cs</c> (anfitrión),
+/// <c>Sala.Reservas.cs</c> (reservas y presencia), <c>Sala.Conexion.cs</c> (reconexión, traspaso y suplente) y
+/// <c>Sala.Blobs.cs</c>.
 /// </summary>
-public sealed class Sala : IAsyncDisposable
+public sealed partial class Sala : IAsyncDisposable
 {
     public const int MaxCarga = 900 * 1024;
     public const int HistorialMax = 4096;
     internal const double RitmoMedio = 20, RitmoRafaga = 40;
     internal static readonly TimeSpan ExcesoExpulsa = TimeSpan.FromSeconds(3);
-    private const int IdsAceptados = 8192, IdsRechazados = 1024;
 
-    private readonly ProcesoRed _red;
+    private ProcesoRed _red;
+    private readonly string _identidad;
     private readonly OpcionesSala _opciones;
-    private readonly Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>? _validar;
+    private readonly Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>> _validar;
     private readonly CancellationTokenSource _fin = new();
     private readonly Lock _cerrojo = new();
     private readonly Dictionary<string, Miembro> _miembros = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Miembro> _pendientes = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _conectados = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Cuota> _cuotas = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Recuerdo> _vistos = new(StringComparer.Ordinal);
+    private readonly List<string> _conectados = [];
+    private readonly Dictionary<string, string[]> _direccionesDe = new(StringComparer.Ordinal);
     private readonly LinkedList<JsonObject> _historial = new();
-    private readonly Channel<(Miembro Autor, Guid Id, JsonElement Datos)> _porOrdenar = Channel.CreateUnbounded<(Miembro, Guid, JsonElement)>();
+    private readonly Channel<(Miembro Autor, Guid Id, JsonElement Datos, string[] Reservas)> _porOrdenar =
+        Channel.CreateUnbounded<(Miembro, Guid, JsonElement, string[])>();
     private readonly TaskCompletionSource _bienvenida = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task _lectura = Task.CompletedTask;
     private Task _orden = Task.CompletedTask;
+    private Task _vigia = Task.CompletedTask;
     private string _anfitrion = "";
 
-    private Sala(ProcesoRed red, OpcionesSala opciones, bool anfitrion,
+    private Sala(ProcesoRed red, string identidad, OpcionesSala opciones,
         Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>? validar)
     {
         _red = red;
+        _identidad = identidad;
         _opciones = opciones;
-        EsAnfitrion = anfitrion;
-        _validar = validar;
+        _validar = validar ?? ((_, _, _) => ValueTask.FromResult(Veredicto.No("sin-validar", "Este equipo no valida cargas.")));
     }
 
-    public bool EsAnfitrion { get; }
+    public bool EsAnfitrion { get; private set; }
     public string Clave { get; private set; } = "";
+    public string Anfitrion => _anfitrion;
     public long Epoca { get; private set; }
     public long Seq { get; private set; }
     public Rol Rol { get; private set; } = Rol.Editar;
@@ -68,12 +71,13 @@ public sealed class Sala : IAsyncDisposable
 
     // ---------- abrir ----------
 
+    /// <param name="validar">La app decide si una carga entra; la sala la llama en orden y de a una.</param>
     public static async Task<Sala> HospedarAsync(string identidad, OpcionesSala opciones, IEnumerable<Miembro> anclados,
         Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>> validar, long epoca = 1, long seq = 0,
         Action<Sala>? suscribir = null, CancellationToken ct = default)
     {
         ProcesoRed red = await ProcesoRed.AbrirAsync(opciones.Ejecutable, ct).ConfigureAwait(false);
-        Sala s = new(red, opciones, true, validar) { Epoca = epoca, Seq = seq };
+        Sala s = new(red, identidad, opciones, validar) { Epoca = epoca, Seq = seq, EsAnfitrion = true };
         suscribir?.Invoke(s);
         try
         {
@@ -82,7 +86,7 @@ public sealed class Sala : IAsyncDisposable
             p["anclados"] = new JsonArray([.. lista.Select(m => (JsonNode)m.Clave)]);
             JsonElement r = await red.LlamarAsync("abrir-sala", p, ct).ConfigureAwait(false);
             s.Clave = r.GetProperty("clave").GetString()!;
-            s.Direcciones = [.. r.GetProperty("direcciones").EnumerateArray().Select(d => d.GetString()!)];
+            s.Direcciones = Textos(r.GetProperty("direcciones"));
             s._anfitrion = s.Clave;
             foreach (Miembro m in lista) s._miembros[m.Clave] = m;
             s._miembros[s.Clave] = new Miembro(s.Clave, opciones.Alias, Rol.Editar);
@@ -99,30 +103,22 @@ public sealed class Sala : IAsyncDisposable
     /// <summary>
     /// Entra con un billete, o vuelve a un anfitrión que ya te ancló (<paramref name="anfitrion"/> y sus direcciones).
     /// <paramref name="suscribir"/> se llama antes de conectar: los <c>orden</c> que reponen llegan justo tras la bienvenida.
+    /// <paramref name="validar"/> solo se usa si este equipo llega a anfitrión (traspaso o suplente).
     /// </summary>
     public static async Task<Sala> UnirseAsync(string identidad, OpcionesSala opciones, string? billete = null,
         string? anfitrion = null, IEnumerable<string>? direcciones = null, long epoca = 0, long ultimoSeq = 0,
-        Action<Sala>? suscribir = null, CancellationToken ct = default)
+        Action<Sala>? suscribir = null, Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>? validar = null,
+        CancellationToken ct = default)
     {
         ProcesoRed red = await ProcesoRed.AbrirAsync(opciones.Ejecutable, ct).ConfigureAwait(false);
-        Sala s = new(red, opciones, false, null) { Epoca = epoca, Seq = ultimoSeq };
+        Sala s = new(red, identidad, opciones, validar) { Epoca = epoca, Seq = ultimoSeq };
         suscribir?.Invoke(s);
         try
         {
-            JsonObject p = Base(identidad, opciones);
-            p["alias"] = opciones.Alias;
-            if (billete is not null) p["billete"] = billete;
-            else
-            {
-                p["anfitrion"] = anfitrion ?? throw new ArgumentException("Hace falta un billete o la clave del anfitrión.");
-                p["direcciones"] = new JsonArray([.. (direcciones ?? []).Select(d => (JsonNode)d)]);
-            }
-            JsonElement r = await red.LlamarAsync("unirse", p, ct).ConfigureAwait(false);
-            s._anfitrion = r.GetProperty("anfitrion").GetString()!;
-            JsonElement e = await red.LlamarAsync("estado", null, ct).ConfigureAwait(false);
-            s.Clave = e.GetProperty("clave").GetString()!;
+            if (billete is null && anfitrion is null) throw new ArgumentException("Hace falta un billete o la clave del anfitrión.");
+            await s.EntrarAsync(billete, anfitrion, direcciones, ct).ConfigureAwait(false);
             s.Arrancar();
-            await s.MandarAsync(new JsonObject { ["type"] = "sincronizar", ["epoca"] = s.Epoca, ["ultimoSeq"] = s.Seq }, null, ct).ConfigureAwait(false);
+            await s.SincronizarAsync(ct).ConfigureAwait(false);
             using CancellationTokenSource tope = CancellationTokenSource.CreateLinkedTokenSource(ct);
             tope.CancelAfter(TimeSpan.FromSeconds(30));
             await s._bienvenida.Task.WaitAsync(tope.Token).ConfigureAwait(false);
@@ -141,12 +137,15 @@ public sealed class Sala : IAsyncDisposable
         ["app"] = o.App,
         ["appVersion"] = o.AppVersion,
         ["carpeta"] = Path.GetFullPath(o.Carpeta),
-        ["red"] = new JsonObject { ["rele"] = o.Red.Rele, ["soloRele"] = o.Red.SoloRele },
+        ["red"] = new JsonObject { ["rele"] = o.Red.Rele, ["soloRele"] = o.Red.SoloRele, ["mdns"] = o.Red.Mdns },
     };
+
+    private static string[] Textos(JsonElement lista) => [.. lista.EnumerateArray().Select(d => d.GetString()!)];
 
     private void Arrancar()
     {
         _lectura = Task.Run(LeerAsync);
+        _vigia = Task.Run(VigilarAsync);
         if (EsAnfitrion) _orden = Task.Run(OrdenarAsync);
     }
 
@@ -158,18 +157,18 @@ public sealed class Sala : IAsyncDisposable
         return r.GetProperty("billete").GetString()!;
     }
 
-    public Task RevocarAsync(CancellationToken ct = default) => _red.LlamarAsync("revocar", new JsonObject(), ct);
+    /// <summary>Sin <paramref name="id"/>, invalida todos los billetes; con él, solo ese.</summary>
+    public Task RevocarAsync(string? id = null, CancellationToken ct = default) =>
+        _red.LlamarAsync("revocar", id is null ? new JsonObject() : new JsonObject { ["id"] = id }, ct);
 
     public async Task AceptarAsync(string clave, Rol rol, CancellationToken ct = default)
     {
-        Miembro m;
         lock (_cerrojo)
         {
             if (!_pendientes.TryGetValue(clave, out Miembro? p)) throw new SalaException("desconocido", "Esa clave no está esperando.");
             if (_miembros.Count >= _opciones.MaxMiembros && !_miembros.ContainsKey(clave)) throw new SalaException("llena", "La sala está llena.");
-            m = p with { Rol = rol };
             // Antes de que el proceso lo admita: su «entra» puede llegar antes de que vuelva la llamada.
-            _miembros[clave] = m;
+            _miembros[clave] = p with { Rol = rol };
         }
         try
         {
@@ -191,28 +190,39 @@ public sealed class Sala : IAsyncDisposable
 
     public async Task ExpulsarAsync(string clave, CancellationToken ct = default)
     {
-        lock (_cerrojo) _miembros.Remove(clave);
+        lock (_cerrojo)
+        {
+            _miembros.Remove(clave);
+            SoltarTodas(clave);
+        }
         await _red.LlamarAsync("expulsar", new JsonObject { ["clave"] = clave, ["vetar"] = true }, ct).ConfigureAwait(false);
         await DifundirMiembrosAsync().ConfigureAwait(false);
+        await DifundirReservasDeAsync().ConfigureAwait(false);
     }
 
     // ---------- los dos ----------
 
-    /// <summary>Propone una carga. Vuelve con su id; lo que pase llega por <see cref="Ordenada"/> o <see cref="Rechazada"/>.</summary>
-    public async Task<Guid> EnviarAsync(JsonElement datos, CancellationToken ct = default)
+    /// <summary>
+    /// Propone una carga que necesita <paramref name="reservas"/> (claves que el autor tiene que tener). Vuelve con su
+    /// id; lo que pase llega por <see cref="Ordenada"/> o <see cref="Rechazada"/>. Sin conexión con el anfitrión, queda
+    /// pendiente y se manda al volver.
+    /// </summary>
+    public async Task<Guid> EnviarAsync(JsonElement datos, IEnumerable<string>? reservas = null, CancellationToken ct = default)
     {
         ComprobarCarga(datos);
+        string[] claves = [.. reservas ?? []];
+        if (claves.Length > MaxReservas || claves.Any(c => !ClaveDeReservaValida(c))) throw new ArgumentException("Claves de reserva inválidas.", nameof(reservas));
         Guid id = Guid.NewGuid();
         if (EsAnfitrion)
         {
             Miembro yo;
             lock (_cerrojo) yo = _miembros[Clave];
-            await _porOrdenar.Writer.WriteAsync((yo, id, datos), ct).ConfigureAwait(false);
+            await _porOrdenar.Writer.WriteAsync((yo, id, datos.Clone(), claves), ct).ConfigureAwait(false);
+            return id;
         }
-        else
-        {
-            await MandarAsync(new JsonObject { ["type"] = "carga", ["id"] = id.ToString(), ["datos"] = Nodo(datos) }, null, ct).ConfigureAwait(false);
-        }
+        JsonObject carga = new() { ["type"] = "carga", ["id"] = id.ToString(), ["datos"] = Nodo(datos), ["reservas"] = new JsonArray([.. claves.Select(c => (JsonNode)c)]) };
+        lock (_cerrojo) _sinRespuesta.Add(id, carga);
+        if (_conectado) await IntentarAsync(MandarAsync((JsonObject)carga.DeepClone(), null, ct)).ConfigureAwait(false);
         return id;
     }
 
@@ -239,6 +249,18 @@ public sealed class Sala : IAsyncDisposable
         return _red.LlamarAsync("enviar", p, ct);
     }
 
+    private static async Task IntentarAsync(Task t)
+    {
+        try
+        {
+            await t.ConfigureAwait(false);
+        }
+        catch (SalaException)
+        {
+            // Un destino que se fue o una cola llena: lo arregla la reconexión (sincronizar).
+        }
+    }
+
     // ---------- lo que llega ----------
 
     private async Task LeerAsync()
@@ -250,10 +272,21 @@ public sealed class Sala : IAsyncDisposable
             {
                 r = await _red.LlamarAsync("recibir", new JsonObject { ["max"] = 256 }, _fin.Token).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or SalaException)
+            catch (OperationCanceledException)
             {
-                if (!_fin.IsCancellationRequested) Cerrada?.Invoke("red");
                 return;
+            }
+            catch (SalaException)
+            {
+                if (_fin.IsCancellationRequested) return;
+                // El proceso murió o se cambió por otro (traspaso): un invitado vuelve a conectar; un anfitrión, no.
+                if (_cambiandoProceso) { await Task.Delay(50).ConfigureAwait(false); continue; }
+                if (EsAnfitrion || !await ReconectarAsync(procesoNuevo: true).ConfigureAwait(false))
+                {
+                    Cerrada?.Invoke("red");
+                    return;
+                }
+                continue;
             }
             foreach (JsonElement ev in r.GetProperty("eventos").EnumerateArray())
             {
@@ -286,6 +319,7 @@ public sealed class Sala : IAsyncDisposable
                     Miembro? m;
                     lock (_cerrojo)
                     {
+                        _conectados.Remove(clave);
                         _conectados.Add(clave);
                         _miembros.TryGetValue(clave, out m);
                     }
@@ -298,73 +332,28 @@ public sealed class Sala : IAsyncDisposable
                     string clave = ev.GetProperty("clave").GetString()!;
                     lock (_cerrojo) _conectados.Remove(clave);
                     MiembroSale?.Invoke(clave, ev.GetProperty("motivo").GetString()!);
+                    _salidas.Writer.TryWrite(clave);
                     break;
                 }
             case "cerrada":
-                Cerrada?.Invoke(ev.GetProperty("motivo").GetString()!);
+                await PerdidoAsync(ev.GetProperty("motivo").GetString()!).ConfigureAwait(false);
+                break;
+            case "blob-avance":
+            case "blob-fin":
+                AtenderBlob(ev);
                 break;
             case "mensaje":
                 {
                     string de = ev.GetProperty("de").GetString()!;
                     JsonElement m = ev.GetProperty("datos");
                     if (EsAnfitrion) await DeInvitadoAsync(de, m).ConfigureAwait(false);
-                    else if (de == _anfitrion) DeAnfitrion(m);
+                    else if (de == _anfitrion) await DeAnfitrionAsync(m).ConfigureAwait(false);
                     break;
                 }
         }
     }
 
-    private async Task DeInvitadoAsync(string de, JsonElement m)
-    {
-        Miembro? autor;
-        lock (_cerrojo) _miembros.TryGetValue(de, out autor);
-        if (autor is null) return;
-        switch (m.GetProperty("type").GetString())
-        {
-            case "sincronizar":
-                {
-                    long suEpoca = m.GetProperty("epoca").GetInt64();
-                    if (suEpoca > Epoca)
-                    {
-                        Superada?.Invoke(suEpoca, de);
-                        return;
-                    }
-                    await ReponerAsync(de, m.GetProperty("ultimoSeq").GetInt64()).ConfigureAwait(false);
-                    break;
-                }
-            case "carga":
-                {
-                    if (!Guid.TryParse(m.GetProperty("id").GetString(), out Guid id)) return;
-                    JsonElement datos = m.GetProperty("datos");
-                    if (datos.ValueKind != JsonValueKind.Object) return;
-                    if (Encoding.UTF8.GetByteCount(datos.GetRawText()) > MaxCarga)
-                    {
-                        await ResponderRechazoAsync(de, id, "grande", "La carga pasa de 900 KiB.").ConfigureAwait(false);
-                        return;
-                    }
-                    switch (Admitir(de))
-                    {
-                        case Paso.Expulsar:
-                            await ExpulsarAsync(de).ConfigureAwait(false);
-                            return;
-                        case Paso.Ritmo:
-                            await ResponderRechazoAsync(de, id, "ritmo", "Demasiadas cargas por segundo.").ConfigureAwait(false);
-                            return;
-                    }
-                    await _porOrdenar.Writer.WriteAsync((autor, id, datos)).ConfigureAwait(false);
-                    break;
-                }
-            case "directo":
-                {
-                    Paso p = Admitir(de);
-                    if (p == Paso.Expulsar) await ExpulsarAsync(de).ConfigureAwait(false);
-                    else if (p == Paso.Pasa && m.GetProperty("datos") is { ValueKind: JsonValueKind.Object } d) DirectoRecibido?.Invoke(new Directo(de, d));
-                    break;
-                }
-        }
-    }
-
-    private void DeAnfitrion(JsonElement m)
+    private async Task DeAnfitrionAsync(JsonElement m)
     {
         long epoca = m.TryGetProperty("epoca", out JsonElement e) ? e.GetInt64() : 0;
         if (epoca < Epoca) return; // anfitrión viejo
@@ -375,227 +364,88 @@ public sealed class Sala : IAsyncDisposable
                     Epoca = epoca;
                     lock (_cerrojo)
                     {
-                        LeerMiembros(m.GetProperty("miembros"));
-                        if (_miembros.TryGetValue(Clave, out Miembro? yo)) Rol = yo.Rol;
+                        LeerMiembros(m);
+                        LeerReservas(m.GetProperty("reservas"));
                     }
+                    _conectado = true;
+                    _sinAnfitrionDesde = null;
                     _bienvenida.TrySetResult();
+                    // Lo que quedó sin respuesta se manda otra vez con su mismo id: el anfitrión no lo aplica dos veces.
+                    JsonObject[] otraVez;
+                    lock (_cerrojo) otraVez = [.. _sinRespuesta.Values.Select(c => (JsonObject)c.DeepClone())];
+                    foreach (JsonObject c in otraVez) await IntentarAsync(MandarAsync(c, null, _fin.Token)).ConfigureAwait(false);
+                    if (_reconectando) { _reconectando = false; Reconectada?.Invoke(); }
                     break;
                 }
             case "miembros":
-                lock (_cerrojo)
-                {
-                    LeerMiembros(m.GetProperty("miembros"));
-                    if (_miembros.TryGetValue(Clave, out Miembro? yo)) Rol = yo.Rol;
-                }
+                lock (_cerrojo) LeerMiembros(m);
                 break;
             case "orden":
                 {
                     if (epoca > Epoca) Epoca = epoca;
                     long seq = m.GetProperty("seq").GetInt64();
-                    if (seq <= Seq) return;
+                    if (seq <= Seq) { Respondida(m); return; }
                     if (seq != Seq + 1)
                     {
-                        _ = MandarAsync(new JsonObject { ["type"] = "sincronizar", ["epoca"] = Epoca, ["ultimoSeq"] = Seq }, null, default);
+                        await IntentarAsync(SincronizarAsync(_fin.Token)).ConfigureAwait(false);
                         return;
                     }
                     Seq = seq;
+                    Respondida(m);
+                    lock (_cerrojo)
+                    {
+                        // También el invitado guarda el historial: lo necesita si toma el anfitrión.
+                        _historial.AddLast((JsonObject)JsonNode.Parse(m.GetRawText())!);
+                        if (_historial.Count > HistorialMax) _historial.RemoveFirst();
+                    }
                     Ordenada?.Invoke(new Ordenado(epoca, seq, Guid.Parse(m.GetProperty("id").GetString()!), m.GetProperty("autor").GetString()!, m.GetProperty("datos").Clone()));
                     break;
                 }
             case "rechazado":
-                Rechazada?.Invoke(new Rechazo(Guid.Parse(m.GetProperty("id").GetString()!), m.GetProperty("motivo").GetString()!,
-                    m.TryGetProperty("detalle", out JsonElement d) ? d.GetString() : null));
-                break;
+                {
+                    Guid id = Guid.Parse(m.GetProperty("id").GetString()!);
+                    bool mia;
+                    lock (_cerrojo) mia = _sinRespuesta.Remove(id);
+                    if (mia) Rechazada?.Invoke(new Rechazo(id, m.GetProperty("motivo").GetString()!, m.TryGetProperty("detalle", out JsonElement d) ? d.GetString() : null));
+                    break;
+                }
             case "desfasado":
                 Desfasada?.Invoke(m.GetProperty("desde").GetInt64());
                 break;
             case "directo":
                 if (m.GetProperty("datos") is { ValueKind: JsonValueKind.Object } datos) DirectoRecibido?.Invoke(new Directo(_anfitrion, datos.Clone()));
                 break;
+            case "reserva":
+                AplicarReserva(m.GetProperty("clave").GetString()!, m.TryGetProperty("de", out JsonElement de) && de.ValueKind == JsonValueKind.String ? de.GetString() : null);
+                break;
+            case "presencia":
+                if (m.GetProperty("de").GetString() is { } quien && quien != Clave && m.GetProperty("datos") is { ValueKind: JsonValueKind.Object } pd)
+                    PresenciaRecibida?.Invoke(quien, pd.Clone());
+                break;
+            case "traspaso":
+                await TraspasoRecibidoAsync(m).ConfigureAwait(false);
+                break;
         }
     }
 
-    private void LeerMiembros(JsonElement lista)
+    private void Respondida(JsonElement orden)
+    {
+        if (Guid.TryParse(orden.GetProperty("id").GetString(), out Guid id))
+            lock (_cerrojo) _sinRespuesta.Remove(id);
+    }
+
+    private void LeerMiembros(JsonElement m)
     {
         _miembros.Clear();
-        foreach (JsonElement x in lista.EnumerateArray())
+        foreach (JsonElement x in m.GetProperty("miembros").EnumerateArray())
         {
             string clave = x.GetProperty("clave").GetString()!;
             _miembros[clave] = new Miembro(clave, x.GetProperty("alias").GetString()!, x.GetProperty("rol").GetString() == "mirar" ? Rol.Mirar : Rol.Editar);
         }
-    }
-
-    // ---------- orden central (anfitrión) ----------
-
-    private async Task OrdenarAsync()
-    {
-        await foreach ((Miembro autor, Guid id, JsonElement datos) in _porOrdenar.Reader.ReadAllAsync(_fin.Token).ConfigureAwait(false))
-        {
-            JsonObject? repetida = null;
-            lock (_cerrojo)
-            {
-                if (_vistos.TryGetValue(autor.Clave, out Recuerdo? r)) repetida = r.Buscar(id);
-            }
-            if (repetida is not null)
-            {
-                if (autor.Clave != Clave) await IntentarAsync(MandarAsync(repetida.DeepClone().AsObject(), autor.Clave, _fin.Token)).ConfigureAwait(false);
-                continue;
-            }
-
-            Veredicto v;
-            if (autor.Rol == Rol.Mirar) v = Veredicto.No("rol", "Con el rol «mirar» no se puede editar.");
-            else v = await ValidarAsync(autor, datos).ConfigureAwait(false);
-
-            if (!v.Aceptada)
-            {
-                await ResponderRechazoAsync(autor.Clave, id, v.Motivo ?? "rechazada", v.Detalle).ConfigureAwait(false);
-                continue;
-            }
-
-            JsonObject orden;
-            long seq;
-            lock (_cerrojo)
-            {
-                // Seq y el historial cambian juntos: ReponerAsync los lee bajo el mismo candado.
-                seq = ++Seq;
-                orden = new() { ["type"] = "orden", ["epoca"] = Epoca, ["seq"] = seq, ["id"] = id.ToString(), ["autor"] = autor.Clave, ["datos"] = Nodo(datos) };
-                Recordar(autor.Clave).Aceptada(id, orden);
-                _historial.AddLast(orden);
-                if (_historial.Count > HistorialMax) _historial.RemoveFirst();
-            }
-            await IntentarAsync(MandarAsync((JsonObject)orden.DeepClone(), null, _fin.Token)).ConfigureAwait(false);
-            Ordenada?.Invoke(new Ordenado(Epoca, seq, id, autor.Clave, datos.Clone()));
-        }
-    }
-
-    private async Task<Veredicto> ValidarAsync(Miembro autor, JsonElement datos)
-    {
-        using CancellationTokenSource tope = CancellationTokenSource.CreateLinkedTokenSource(_fin.Token);
-        tope.CancelAfter(_opciones.TopeValidar);
-        try
-        {
-            return await _validar!(autor, datos, tope.Token).AsTask().WaitAsync(tope.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!_fin.IsCancellationRequested)
-        {
-            return Veredicto.No("tiempo", "La validación tardó demasiado.");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return Veredicto.No("invalida", ex.Message);
-        }
-    }
-
-    private async Task ResponderRechazoAsync(string a, Guid id, string motivo, string? detalle)
-    {
-        JsonObject r = new() { ["type"] = "rechazado", ["id"] = id.ToString(), ["motivo"] = motivo };
-        if (detalle is not null) r["detalle"] = detalle.Length > 4096 ? detalle[..4096] : detalle;
-        if (motivo != "ritmo")
-        {
-            lock (_cerrojo) Recordar(a).Rechazada(id, r);
-        }
-        if (a == Clave) Rechazada?.Invoke(new Rechazo(id, motivo, detalle));
-        else await IntentarAsync(MandarAsync((JsonObject)r.DeepClone(), a, _fin.Token)).ConfigureAwait(false);
-    }
-
-    private async Task ReponerAsync(string a, long ultimoSeq)
-    {
-        List<JsonObject> faltan;
-        JsonObject bienvenida;
-        bool desfasado;
-        lock (_cerrojo)
-        {
-            long masViejo = _historial.First?.Value["seq"]!.GetValue<long>() ?? Seq + 1;
-            desfasado = ultimoSeq < Seq && ultimoSeq + 1 < masViejo;
-            faltan = desfasado ? [] : [.. _historial.Where(o => o["seq"]!.GetValue<long>() > ultimoSeq).Select(o => (JsonObject)o.DeepClone())];
-            bienvenida = new JsonObject { ["type"] = "bienvenida", ["epoca"] = Epoca, ["seq"] = Seq, ["miembros"] = ListaMiembros(), ["reservas"] = new JsonArray() };
-            if (desfasado) faltan.Add(new JsonObject { ["type"] = "desfasado", ["desde"] = masViejo });
-        }
-        await MandarAsync(bienvenida, a, _fin.Token).ConfigureAwait(false);
-        foreach (JsonObject o in faltan) await MandarAsync(o, a, _fin.Token).ConfigureAwait(false);
-    }
-
-    private JsonArray ListaMiembros() =>
-        [.. _miembros.Values.Select(m => (JsonNode)new JsonObject { ["clave"] = m.Clave, ["alias"] = m.Alias, ["rol"] = m.Rol == Rol.Mirar ? "mirar" : "editar" })];
-
-    private async Task DifundirMiembrosAsync()
-    {
-        JsonObject m;
-        lock (_cerrojo) m = new JsonObject { ["type"] = "miembros", ["miembros"] = ListaMiembros() };
-        await IntentarAsync(MandarAsync(m, null, _fin.Token)).ConfigureAwait(false);
-    }
-
-    private static async Task IntentarAsync(Task t)
-    {
-        try
-        {
-            await t.ConfigureAwait(false);
-        }
-        catch (SalaException)
-        {
-            // Un destino que se fue o una cola llena: lo arregla la reconexión (sincronizar).
-        }
-    }
-
-    // ---------- ritmo y recuerdos ----------
-
-    internal enum Paso { Pasa, Ritmo, Expulsar }
-
-    private Paso Admitir(string de)
-    {
-        lock (_cerrojo)
-        {
-            if (!_cuotas.TryGetValue(de, out Cuota? c)) _cuotas[de] = c = new Cuota();
-            return c.Tomar(DateTime.UtcNow);
-        }
-    }
-
-    private Recuerdo Recordar(string clave)
-    {
-        if (!_vistos.TryGetValue(clave, out Recuerdo? r)) _vistos[clave] = r = new Recuerdo();
-        return r;
-    }
-
-    /// <summary>Cubo de fichas: 20 por segundo, ráfaga de 40; 60 rechazos en 3 s (seguir al doble del ritmo), expulsión.</summary>
-    internal sealed class Cuota
-    {
-        private double _fichas = RitmoRafaga;
-        private DateTime _ultimo = DateTime.MinValue;
-        private readonly Queue<DateTime> _rechazos = new();
-
-        public Paso Tomar(DateTime ahora)
-        {
-            if (_ultimo != DateTime.MinValue) _fichas = Math.Min(RitmoRafaga, _fichas + (ahora - _ultimo).TotalSeconds * RitmoMedio);
-            _ultimo = ahora;
-            if (_fichas >= 1)
-            {
-                _fichas -= 1;
-                return Paso.Pasa;
-            }
-            while (_rechazos.Count > 0 && ahora - _rechazos.Peek() > ExcesoExpulsa) _rechazos.Dequeue();
-            _rechazos.Enqueue(ahora);
-            return _rechazos.Count >= ExcesoExpulsa.TotalSeconds * RitmoMedio ? Paso.Expulsar : Paso.Ritmo;
-        }
-    }
-
-    /// <summary>Ids ya vistos de un miembro con su respuesta, para contestar igual a una carga repetida.</summary>
-    private sealed class Recuerdo
-    {
-        private readonly Dictionary<Guid, JsonObject> _respuestas = [];
-        private readonly Queue<Guid> _aceptadas = new(), _rechazadas = new();
-
-        public JsonObject? Buscar(Guid id) => _respuestas.GetValueOrDefault(id);
-
-        public void Aceptada(Guid id, JsonObject r) => Guardar(id, r, _aceptadas, IdsAceptados);
-
-        public void Rechazada(Guid id, JsonObject r) => Guardar(id, r, _rechazadas, IdsRechazados);
-
-        private void Guardar(Guid id, JsonObject r, Queue<Guid> cola, int max)
-        {
-            if (!_respuestas.TryAdd(id, r)) return;
-            cola.Enqueue(id);
-            if (cola.Count > max) _respuestas.Remove(cola.Dequeue());
-        }
+        if (_miembros.TryGetValue(Clave, out Miembro? yo)) Rol = yo.Rol;
+        _suplente = m.TryGetProperty("suplente", out JsonElement s) && s.ValueKind == JsonValueKind.Object
+            ? (s.GetProperty("clave").GetString()!, Textos(s.GetProperty("direcciones")))
+            : null;
     }
 
     private static JsonNode Nodo(JsonElement e) => JsonSerializer.SerializeToNode(e, SalaJson.Default.JsonElement)!;
@@ -615,7 +465,7 @@ public sealed class Sala : IAsyncDisposable
         await _red.DisposeAsync().ConfigureAwait(false);
         try
         {
-            await Task.WhenAll(_lectura, _orden).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await Task.WhenAll(_lectura, _orden, _vigia).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
         {
