@@ -3,8 +3,11 @@
 mod billete;
 mod blobs;
 mod hex;
+mod limites;
 mod marco;
 mod modulo;
+#[cfg(test)]
+mod pruebas;
 mod sala;
 
 use std::time::Duration;
