@@ -4,7 +4,7 @@ namespace Dathinel.Sala.Tests;
 
 public sealed partial class HuellaTests
 {
-    [GeneratedRegex("^[a-zñ]{3,8}$")]
+    [GeneratedRegex("^[a-z]{3,8}$")]
     private static partial Regex Palabra();
 
     [Fact]
