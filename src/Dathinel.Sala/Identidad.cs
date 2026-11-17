@@ -94,8 +94,17 @@ public static partial class Identidad
                 fs.Write(datos);
                 fs.Flush(flushToDisk: true);
             }
-            File.Move(tmp, completa, overwrite: false);
-            movido = true;
+            // Sin sobrescribir y atómico: MoveFileEx sin reemplazar en Windows, link(2) en Unix (en macOS File.Move
+            // sin sobrescribir comprueba y luego renombra, y dos procesos pueden pisarse).
+            if (OperatingSystem.IsWindows())
+            {
+                File.Move(tmp, completa, overwrite: false);
+                movido = true;
+            }
+            else if (Enlazar(tmp, completa) != 0)
+            {
+                throw new IOException($"No se pudo publicar la identidad (errno {Marshal.GetLastPInvokeError()}).");
+            }
             return clave;
         }
         catch (IOException) when (File.Exists(completa))
@@ -187,6 +196,9 @@ public static partial class Identidad
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool CryptUnprotectData(IntPtr pDataIn, IntPtr ppszDataDescr, IntPtr pOptionalEntropy,
         IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, IntPtr pDataOut);
+
+    [LibraryImport("libc", EntryPoint = "link", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    private static partial int Enlazar(string existente, string nuevo);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

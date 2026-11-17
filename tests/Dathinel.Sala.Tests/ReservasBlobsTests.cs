@@ -170,4 +170,48 @@ public sealed class ReservasBlobsTests
         await HastaQue(() => enEva.Any(p => p.Item1 == luis.Clave), que: "eva la ve al entrar");
         Assert.Equal(120, enEva.First(p => p.Item1 == luis.Clave).Item2.GetProperty("cabezal").GetInt32());
     }
+
+    private static (string Ruta, string Huella, long Tamano) Grande(string carpeta, long bytes)
+    {
+        string ruta = Path.Combine(carpeta, Guid.NewGuid().ToString("N") + ".bin");
+        using (FileStream f = File.Create(ruta)) f.SetLength(bytes);
+        return (ruta, Sala.HuellaDe(ruta), bytes);
+    }
+
+    [Fact]
+    public async Task Cancelar_una_descarga_borra_el_temporal_y_no_deja_nada()
+    {
+        string cAna = Carpeta(), cLuis = Carpeta();
+        await using Sala anf = await AnfitrionAsync(opciones: Opciones("Ana", cAna));
+        await using Sala luis = await InvitadoAsync(anf, "Luis", Opciones("Luis", cLuis));
+        var b = Grande(cAna, 256L << 20);
+        await anf.OfrecerBlobsAsync([b]);
+        using CancellationTokenSource corta = new();
+        luis.BlobAvance += (_, _) => corta.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => luis.PedirBlobAsync(anf.Clave, b.Huella, b.Tamano, Path.Combine(cLuis, "x.bin"), tope: 1L << 30, corta.Token));
+        // Antes el proceso abortaba la tarea y el .parte se quedaba.
+        Assert.Empty(Directory.EnumerateFileSystemEntries(cLuis));
+        // Y la misma huella se puede volver a pedir: el intento viejo no completa el nuevo.
+        var c = Archivo(cAna, 1000);
+        await anf.OfrecerBlobsAsync([c]);
+        await luis.PedirBlobAsync(anf.Clave, c.Huella, c.Tamano, Path.Combine(cLuis, "y.bin"), tope: 1 << 20);
+    }
+
+    [Fact]
+    public async Task Cerrar_la_sala_durante_una_descarga_no_deja_la_espera_colgada()
+    {
+        string cAna = Carpeta(), cLuis = Carpeta();
+        await using Sala anf = await AnfitrionAsync(opciones: Opciones("Ana", cAna));
+        Sala luis = await InvitadoAsync(anf, "Luis", Opciones("Luis", cLuis));
+        var b = Grande(cAna, 256L << 20);
+        await anf.OfrecerBlobsAsync([b]);
+        TaskCompletionSource avanza = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        luis.BlobAvance += (_, _) => avanza.TrySetResult();
+        Task bajando = luis.PedirBlobAsync(anf.Clave, b.Huella, b.Tamano, Path.Combine(cLuis, "x.bin"), tope: 1L << 30);
+        await avanza.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await luis.DisposeAsync();
+        SalaException e = await Assert.ThrowsAsync<SalaException>(() => bajando.WaitAsync(TimeSpan.FromSeconds(15)));
+        Assert.Equal("cerrada", e.Codigo);
+        await HastaQue(() => !Directory.EnumerateFiles(cLuis, "*.parte").Any(), que: "sin temporales");
+    }
 }
