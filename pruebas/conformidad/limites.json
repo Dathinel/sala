@@ -1,0 +1,18 @@
+{
+ "_": "Vectores de conformidad entre dathinel-red (Rust) y Dathinel.Sala (C#): los dos lados los prueban. La profundidad cuenta cada objeto o lista, la raiz incluida. Un marco entre pares llega a la app dentro de 4 envoltorios (result, value, eventos, evento) y la tuberia local admite 32: por eso 28.",
+ "marcoMaxBytes": 983040,
+ "profundidadMarco": 28,
+ "cargaMaxBytes": 921600,
+ "profundidadCarga": 27,
+ "presenciaMaxBytes": 4096,
+ "envoltorioLocal": 4,
+ "profundidadLocal": 32,
+ "casos": [
+  { "nombre": "marco de profundidad 28 (el maximo entre pares)", "json": "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]}", "marco": true },
+  { "nombre": "marco de profundidad 29", "json": "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]}", "marco": false },
+  { "nombre": "sustituto UTF-16 suelto", "json": "{\"a\":\"\\ud800\"}", "marco": false },
+  { "nombre": "par de sustitutos bien formado", "json": "{\"a\":\"\\ud83d\\ude00\"}", "marco": true },
+  { "nombre": "no es un objeto", "json": "[1]", "marco": false },
+  { "nombre": "JSON cortado", "json": "{\"a\":", "marco": false }
+ ]
+}

@@ -101,4 +101,15 @@ public sealed class ConexionTests
         await using Sala luis = await Sala.UnirseAsync(Identidad.Nueva(), O("Luis"), sinDirecciones);
         Assert.Equal(anf.Clave, luis.Anfitrion);
     }
+
+    [Fact]
+    public async Task Si_el_suplente_se_va_el_anfitrion_anuncia_otro()
+    {
+        await using Sala ana = await AnfitrionAsync();
+        Sala luis = await InvitadoAsync(ana, "Luis");
+        await using Sala eva = await InvitadoAsync(ana, "Eva");
+        await HastaQue(() => eva.Suplente == luis.Clave, que: "luis suplente");
+        await luis.DisposeAsync();
+        await HastaQue(() => eva.Suplente == eva.Clave, que: "eva pasa a suplente");
+    }
 }

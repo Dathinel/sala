@@ -138,4 +138,36 @@ public sealed class ReservasBlobsTests
         Assert.Equal("invalid-parameters", await Codigo(() => anf.OfrecerBlobsAsync([(fuera, Sala.HuellaDe(fuera), 3)])));
         File.Delete(fuera);
     }
+
+    [Fact]
+    public async Task Cada_carga_del_dueno_renueva_su_reserva_aunque_no_entre()
+    {
+        await using Sala anf = await AnfitrionAsync((_, _, _) => ValueTask.FromResult(Veredicto.No("no")),
+            opciones: Opciones("Ana") with { ReservaInactiva = TimeSpan.FromSeconds(2) });
+        await using Sala luis = await InvitadoAsync(anf, "Luis");
+        Assert.True(await luis.ReservarAsync("pista:a"));
+        // 4 s de cargas rechazadas, una cada medio segundo: antes solo renovaba una aceptada y caducaba a los 2 s.
+        for (int i = 0; i < 8; i++)
+        {
+            await luis.EnviarAsync(Json($$"""{"n":{{i}}}"""));
+            await Task.Delay(500);
+        }
+        Assert.Equal(luis.Clave, anf.Reservas["pista:a"]);
+    }
+
+    [Fact]
+    public async Task Quien_entra_recibe_la_ultima_presencia_de_los_demas()
+    {
+        await using Sala anf = await AnfitrionAsync();
+        await using Sala luis = await InvitadoAsync(anf, "Luis");
+        ConcurrentQueue<string> enAnf = new();
+        anf.PresenciaRecibida += (de, _) => enAnf.Enqueue(de);
+        await luis.PresenciaAsync(Json("""{"cabezal":120}"""));
+        await HastaQue(() => enAnf.Contains(luis.Clave), que: "presencia de luis");
+        ConcurrentQueue<(string, JsonElement)> enEva = new();
+        await using Sala eva = await Sala.UnirseAsync(Identidad.Nueva(), Opciones("Eva"), await anf.NuevoBilleteAsync(TimeSpan.FromMinutes(10)),
+            suscribir: s => s.PresenciaRecibida += (de, d) => enEva.Enqueue((de, d)));
+        await HastaQue(() => enEva.Any(p => p.Item1 == luis.Clave), que: "eva la ve al entrar");
+        Assert.Equal(120, enEva.First(p => p.Item1 == luis.Clave).Item2.GetProperty("cabezal").GetInt32());
+    }
 }

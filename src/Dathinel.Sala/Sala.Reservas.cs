@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -12,7 +11,13 @@ public sealed partial class Sala
     public const int MaxPresencia = 4096;
     private static readonly TimeSpan EsperaReserva = TimeSpan.FromSeconds(10);
 
-    private sealed record Reserva(string Dueno, DateTime Ultima);
+    private sealed record Reserva(string Dueno, long Ultima);
+
+    /// <summary>Reloj monotónico en milisegundos: cambiar la hora del equipo no adelanta ni alarga los plazos.</summary>
+    private static long Ahora => Environment.TickCount64;
+
+    /// <summary>La última presencia de cada miembro (§5.5); se reparte a quien entra y se borra cuando sale.</summary>
+    private readonly Dictionary<string, JsonElement> _presencias = new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, Reserva> _reservas = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TaskCompletionSource<string?>> _esperandoReserva = new(StringComparer.Ordinal);
@@ -27,7 +32,7 @@ public sealed partial class Sala
         get { lock (_cerrojo) return _reservas.ToDictionary(r => r.Key, r => r.Value.Dueno, StringComparer.Ordinal); }
     }
 
-    [GeneratedRegex("^[a-z0-9:/._-]{1,128}$")]
+    [GeneratedRegex(@"\A[a-z0-9:/._-]{1,128}\z")]
     private static partial Regex ClaveReserva();
 
     /// <summary>Una etiqueta, nunca una ruta: <c>[a-z0-9:/._-]</c>, sin <c>..</c> ni <c>/</c> al principio o al final.</summary>
@@ -71,7 +76,7 @@ public sealed partial class Sala
     /// <summary>Cabezal, cursor o selección: objeto de hasta 4 KiB; fuera del orden y sin guardar.</summary>
     public async Task PresenciaAsync(JsonElement datos, CancellationToken ct = default)
     {
-        if (datos.ValueKind != JsonValueKind.Object || Encoding.UTF8.GetByteCount(datos.GetRawText()) > MaxPresencia)
+        if (!Limites.Objeto(datos, MaxPresencia))
             throw new ArgumentException("La presencia es un objeto de hasta 4 KiB.", nameof(datos));
         if (EsAnfitrion) await PresenciaDeAsync(Clave, datos).ConfigureAwait(false);
         else if (_conectado) await IntentarAsync(MandarAsync(new JsonObject { ["type"] = "presencia", ["datos"] = Nodo(datos) }, null, ct)).ConfigureAwait(false);
@@ -95,7 +100,7 @@ public sealed partial class Sala
             if (puede)
             {
                 cambio = r is null;
-                _reservas[clave] = new Reserva(quien.Clave, DateTime.UtcNow);
+                _reservas[clave] = new Reserva(quien.Clave, Ahora);
             }
             dueno = _reservas.TryGetValue(clave, out Reserva? d) ? d.Dueno : null;
         }
@@ -154,7 +159,7 @@ public sealed partial class Sala
     private void Renovar(string quien)
     {
         foreach (KeyValuePair<string, Reserva> r in _reservas.Where(r => r.Value.Dueno == quien).ToList())
-            _reservas[r.Key] = r.Value with { Ultima = DateTime.UtcNow };
+            _reservas[r.Key] = r.Value with { Ultima = Ahora };
     }
 
     private JsonArray ListaReservas() =>
@@ -162,10 +167,14 @@ public sealed partial class Sala
 
     private async Task PresenciaDeAsync(string de, JsonElement datos)
     {
-        if (Encoding.UTF8.GetByteCount(datos.GetRawText()) > MaxPresencia) return;
+        if (!Limites.Objeto(datos, MaxPresencia)) return;
         // Por encima de 20/s se descarta en silencio; no cuenta para expulsar.
         if (de != Clave && Admitir(_cuotasPresencia, de, 20, 20) != Paso.Pasa) return;
-        lock (_cerrojo) Renovar(de);
+        lock (_cerrojo)
+        {
+            Renovar(de);
+            _presencias[de] = datos.Clone();
+        }
         if (de != Clave) PresenciaRecibida?.Invoke(de, datos.Clone());
         string[] otros;
         lock (_cerrojo) otros = [.. _conectados.Where(c => c != de)];
@@ -182,7 +191,7 @@ public sealed partial class Sala
             while (await reloj.WaitForNextTickAsync(_fin.Token).ConfigureAwait(false))
             {
                 if (!EsAnfitrion) continue;
-                DateTime limite = DateTime.UtcNow - _opciones.ReservaInactiva;
+                long limite = Ahora - (long)_opciones.ReservaInactiva.TotalMilliseconds;
                 lock (_cerrojo)
                 {
                     foreach (string c in _reservas.Where(r => r.Value.Ultima < limite).Select(r => r.Key).ToList())
@@ -201,11 +210,27 @@ public sealed partial class Sala
 
     // ---------- invitado ----------
 
-    private void LeerReservas(JsonElement lista)
+    /// <summary>Las reservas de una <c>bienvenida</c>, sin tocar nada; null si alguna no vale o es de quien no es miembro.</summary>
+    private static List<(string Clave, string De)>? LeerReservas(JsonElement m, Dictionary<string, Miembro> miembros)
     {
-        _reservas.Clear();
-        foreach (JsonElement r in lista.EnumerateArray())
-            _reservas[r.GetProperty("clave").GetString()!] = new Reserva(r.GetProperty("de").GetString()!, DateTime.UtcNow);
+        if (!m.TryGetProperty("reservas", out JsonElement lista) || lista.ValueKind != JsonValueKind.Array || lista.GetArrayLength() > MaxReservas * 16) return null;
+        List<(string, string)> r = [];
+        foreach (JsonElement x in lista.EnumerateArray())
+        {
+            if (x.ValueKind != JsonValueKind.Object || Limites.Texto(x, "clave") is not { } c || !ClaveDeReservaValida(c)
+                || Limites.Texto(x, "de") is not { } d || !miembros.ContainsKey(d)) return null;
+            r.Add((c, d));
+        }
+        return r;
+    }
+
+    /// <summary>Anfitrión: manda a <paramref name="a"/> la última presencia de los demás (tras su bienvenida).</summary>
+    private async Task MandarPresenciasAsync(string a)
+    {
+        (string De, JsonElement Datos)[] todas;
+        lock (_cerrojo) todas = [.. _presencias.Where(p => p.Key != a).Select(p => (p.Key, p.Value))];
+        foreach ((string de, JsonElement datos) in todas)
+            await IntentarAsync(MandarAsync(new JsonObject { ["type"] = "presencia", ["de"] = de, ["datos"] = Nodo(datos) }, a, _fin.Token)).ConfigureAwait(false);
     }
 
     private void AplicarReserva(string clave, string? de)
@@ -214,7 +239,7 @@ public sealed partial class Sala
         lock (_cerrojo)
         {
             if (de is null) _reservas.Remove(clave);
-            else _reservas[clave] = new Reserva(de, DateTime.UtcNow);
+            else _reservas[clave] = new Reserva(de, Ahora);
             _esperandoReserva.Remove(clave, out tcs);
         }
         tcs?.TrySetResult(de);

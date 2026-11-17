@@ -15,7 +15,7 @@ public sealed partial class Sala
     private string[] _anfitrionDirecciones = [];
     private (string Clave, string[] Direcciones)? _suplente;
     private (string Clave, string[] Direcciones)? _destinoTraspaso;
-    private DateTime? _sinAnfitrionDesde;
+    private long? _sinAnfitrionDesde;
     private volatile bool _conectado;
     private volatile bool _reconectando;
     private volatile bool _cambiandoProceso;
@@ -76,7 +76,7 @@ public sealed partial class Sala
     private async Task<bool> ReconectarAsync(bool procesoNuevo)
     {
         _conectado = false;
-        _sinAnfitrionDesde ??= DateTime.UtcNow;
+        _sinAnfitrionDesde ??= Ahora;
         if (!_reconectando)
         {
             _reconectando = true;
@@ -92,7 +92,7 @@ public sealed partial class Sala
             {
                 // Solo quien también perdió al anfitrión busca al suplente, y solo tras la espera (§5.6). Va primero:
                 // intentar con un anfitrión apagado tarda lo que tarda en vencer la conexión.
-                if (_suplente is { } s && s.Clave != Clave && DateTime.UtcNow - _sinAnfitrionDesde >= _opciones.EsperaSuplente)
+                if (_suplente is { } s && s.Clave != Clave && Ahora - _sinAnfitrionDesde >= (long)_opciones.EsperaSuplente.TotalMilliseconds)
                     candidatos.Add(s);
                 candidatos.Add((_anfitrion, _anfitrionDirecciones));
             }
@@ -173,7 +173,7 @@ public sealed partial class Sala
             if (!_conectados.Contains(clave) || !_miembros.TryGetValue(clave, out Miembro? m) || m.Rol != Rol.Editar || !_direccionesDe.TryGetValue(clave, out dirs))
                 throw new SalaException("desconocido", "Ese miembro no está conectado o no puede editar.");
             _traspasando = true;
-            historial = [.. _historial.Select(o => o.DeepClone())];
+            historial = [.. _historial.Todo.Select(o => o.DeepClone())];
             seq = Seq;
         }
         string carpeta = Path.Combine(Path.GetFullPath(_opciones.Carpeta), ".sala");
@@ -269,7 +269,7 @@ public sealed partial class Sala
             long seq = o["seq"]!.GetValue<long>();
             if (seq != Seq + 1) continue;
             Seq = seq;
-            lock (_cerrojo) _historial.AddLast(o);
+            lock (_cerrojo) _historial.Agregar(seq, o);
             Ordenada?.Invoke(new Ordenado(o["epoca"]!.GetValue<long>(), seq, Guid.Parse(o["id"]!.GetValue<string>()), o["autor"]!.GetValue<string>(), JsonSerializer.SerializeToElement(o["datos"]!, SalaJson.Default.JsonNode)));
         }
         await AscenderAsync(epoca).ConfigureAwait(false);
@@ -285,7 +285,7 @@ public sealed partial class Sala
     {
         if (EsAnfitrion) throw new SalaException("invalid-parameters", "Ya eres el anfitrión.");
         if (_suplente?.Clave != Clave) throw new SalaException("invalid-parameters", "No eres el suplente de esta sala.");
-        if (_sinAnfitrionDesde is not { } desde || DateTime.UtcNow - desde < _opciones.EsperaSuplente)
+        if (_sinAnfitrionDesde is not { } desde || Ahora - desde < (long)_opciones.EsperaSuplente.TotalMilliseconds)
             throw new SalaException("invalid-parameters", "El anfitrión no lleva bastante tiempo sin responder.");
         await AscenderAsync(Epoca + 1, ct).ConfigureAwait(false);
     }
@@ -297,8 +297,8 @@ public sealed partial class Sala
         {
             otros = [.. _miembros.Keys.Where(k => k != Clave)];
             _vistos.Clear();
-            foreach (JsonObject o in _historial)
-                if (Guid.TryParse(o["id"]?.GetValue<string>(), out Guid id)) Recordar(o["autor"]!.GetValue<string>()).Aceptada(id, o);
+            foreach (JsonObject o in _historial.Todo)
+                if (Guid.TryParse(o["id"]?.GetValue<string>(), out Guid id)) Recordar(o["autor"]!.GetValue<string>()).Aceptada(id, o["seq"]!.GetValue<long>());
             // Mis cargas sin respuesta pasan por el orden como cualquier otra.
             _sinRespuesta.Clear();
         }
