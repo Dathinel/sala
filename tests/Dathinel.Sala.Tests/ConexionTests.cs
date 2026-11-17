@@ -191,7 +191,7 @@ public sealed class ConexionTests
             int n = Interlocked.Increment(ref dentro);
             int m;
             while ((m = Volatile.Read(ref maximo)) < n && Interlocked.CompareExchange(ref maximo, n, m) != m) { }
-            await Task.Delay(20);
+            await Task.Delay(20, CancellationToken.None);
             Interlocked.Decrement(ref dentro);
             return Veredicto.Si;
         };
