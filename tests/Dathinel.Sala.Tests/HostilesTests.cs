@@ -43,6 +43,23 @@ public sealed class HostilesTests
 
         public Task<JsonElement> MandarAsync(JsonObject m) => Red.LlamarAsync("enviar", new JsonObject { ["datos"] = m });
 
+        /// <summary>A un destino concreto, reintentando mientras la cola de salida esté llena.</summary>
+        public async Task MandarAAsync(JsonObject m, string a)
+        {
+            while (true)
+            {
+                try
+                {
+                    await Red.LlamarAsync("enviar", new JsonObject { ["datos"] = m.DeepClone(), ["a"] = new JsonArray(a) });
+                    return;
+                }
+                catch (SalaException ex) when (ex.Codigo == "ocupado-red")
+                {
+                    await Task.Delay(20);
+                }
+            }
+        }
+
         public IEnumerable<JsonElement> Mensajes(string type) => Llegan
             .Where(e => e.GetProperty("tipo").GetString() == "mensaje" && e.GetProperty("datos").GetProperty("type").GetString() == type)
             .Select(e => e.GetProperty("datos"));
@@ -93,7 +110,8 @@ public sealed class HostilesTests
         }
         await HastaQue(() => malo.Cerrada, que: "expulsado");
         Assert.Contains(malo.Mensajes("rechazado"), r => r.GetProperty("motivo").GetString() == "ritmo");
-        Assert.True(anf.Seq is >= 40 and < 200, $"seq {anf.Seq}");
+        // 40 de ráfaga y 20/s durante los ~10 s que puede tardar en expulsar.
+        Assert.True(anf.Seq is >= 40 and < 260, $"seq {anf.Seq}");
         Assert.DoesNotContain(anf.Miembros, m => m.Alias == "Malo");
 
         // El anfitrión sigue sirviendo a otros.
@@ -197,6 +215,150 @@ public sealed class HostilesTests
         Ordenado o = Assert.Single(ordenadas);
         Assert.True(o.Datos.TryGetProperty("nuevo", out _));
         await fin.CancelAsync();
+    }
+
+    /// <summary>
+    /// Un anfitrión crudo que ancla a un invitado de verdad y, a cada <c>sincronizar</c>, le manda lo que diga
+    /// <paramref name="guion"/>. Devuelve el invitado ya dentro.
+    /// </summary>
+    private static async Task<(Sala Invitado, ProcesoRed Hostil, CancellationTokenSource Fin)> AnfitrionHostilAsync(
+        Func<string, Func<JsonObject, Task>, Task> guion, Action<Sala>? suscribir = null)
+    {
+        string idInv = Identidad.Nueva();
+        string clavePublica;
+        await using (ProcesoRed sonda = await ProcesoRed.AbrirAsync(RutaRed, default))
+            clavePublica = (await sonda.LlamarAsync("abrir-sala", Base(idInv, Carpeta()))).GetProperty("clave").GetString()!;
+        ProcesoRed hostil = await ProcesoRed.AbrirAsync(RutaRed, default);
+        JsonObject p = Base(Identidad.Nueva(), Carpeta());
+        p["anclados"] = new JsonArray(clavePublica);
+        JsonElement abierto = await hostil.LlamarAsync("abrir-sala", p);
+        string claveHostil = abierto.GetProperty("clave").GetString()!;
+        string[] dirs = [.. abierto.GetProperty("direcciones").EnumerateArray().Select(d => d.GetString()!)];
+        CancellationTokenSource fin = new();
+        _ = Task.Run(async () =>
+        {
+            while (!fin.IsCancellationRequested)
+            {
+                JsonElement r;
+                try { r = await hostil.LlamarAsync("recibir", new JsonObject(), fin.Token); }
+                catch (Exception) { return; }
+                foreach (JsonElement ev in r.GetProperty("eventos").EnumerateArray())
+                {
+                    if (ev.GetProperty("tipo").GetString() != "mensaje" || ev.GetProperty("datos").GetProperty("type").GetString() != "sincronizar") continue;
+                    await guion(claveHostil, m => hostil.LlamarAsync("enviar", new JsonObject { ["datos"] = m }));
+                }
+            }
+        });
+        Sala inv = await Sala.UnirseAsync(idInv, Opciones("Luis"), anfitrion: claveHostil, direcciones: dirs, suscribir: suscribir);
+        return (inv, hostil, fin);
+    }
+
+    private static JsonObject Bienvenida(long epoca, string clave, string rol = "editar") => new()
+    {
+        ["type"] = "bienvenida",
+        ["epoca"] = epoca,
+        ["seq"] = 0,
+        ["reservas"] = new JsonArray(),
+        ["miembros"] = new JsonArray(new JsonObject { ["clave"] = clave, ["alias"] = "Ana", ["rol"] = rol }),
+    };
+
+    [Fact]
+    public async Task Un_orden_o_una_bienvenida_mal_formados_de_un_anfitrion_no_cambian_nada()
+    {
+        int vez = 0;
+        ConcurrentQueue<Ordenado> ordenadas = new();
+        var (inv, hostil, fin) = await AnfitrionHostilAsync(async (clave, M) =>
+        {
+            if (Interlocked.Increment(ref vez) > 1) return;
+            await M(Bienvenida(1, clave));
+            // seq siguiente e id inválido: antes consumía la secuencia sin avisar.
+            await M(new JsonObject { ["type"] = "orden", ["epoca"] = 1, ["seq"] = 1, ["id"] = "no-es-guid", ["autor"] = clave, ["datos"] = new JsonObject() });
+            // Un rol que no existe con época nueva: antes cambiaba la época y vaciaba los miembros.
+            await M(Bienvenida(7, clave, rol: "admin"));
+            await M(new JsonObject { ["type"] = "miembros", ["epoca"] = 1, ["miembros"] = new JsonArray(new JsonObject { ["clave"] = "corta", ["alias"] = "x", ["rol"] = "editar" }) });
+            await M(new JsonObject { ["type"] = "orden", ["epoca"] = 1, ["seq"] = 1, ["id"] = Guid.NewGuid().ToString(), ["autor"] = clave, ["datos"] = new JsonObject { ["bueno"] = true } });
+        }, s => s.Ordenada += o => ordenadas.Enqueue(o));
+        await using Sala _i = inv;
+        await using ProcesoRed _h = hostil;
+        using CancellationTokenSource _f = fin;
+        await HastaQue(() => inv.Seq == 1, que: "el orden bueno");
+        Assert.Equal(1, inv.Epoca);
+        Assert.True(Assert.Single(ordenadas).Datos.GetProperty("bueno").GetBoolean());
+        Assert.Single(inv.Miembros);
+        await fin.CancelAsync();
+    }
+
+    [Fact]
+    public async Task Un_anfitrion_no_cuela_directos_presencias_ni_reservas_fuera_de_limite()
+    {
+        ConcurrentQueue<string> llegan = new();
+        var (inv, hostil, fin) = await AnfitrionHostilAsync(async (clave, M) =>
+        {
+            await M(Bienvenida(1, clave));
+            await M(new JsonObject { ["type"] = "directo", ["epoca"] = 1, ["datos"] = new JsonObject { ["x"] = new string('a', 920 * 1024) } });
+            await M(new JsonObject { ["type"] = "presencia", ["epoca"] = 1, ["de"] = clave, ["datos"] = new JsonObject { ["x"] = new string('a', 5000) } });
+            await M(new JsonObject { ["type"] = "reserva", ["epoca"] = 1, ["clave"] = "pista:a\n", ["de"] = clave });
+            await M(new JsonObject { ["type"] = "directo", ["epoca"] = 1, ["datos"] = new JsonObject { ["fin"] = true } });
+        }, s =>
+        {
+            s.DirectoRecibido += d => llegan.Enqueue(d.Datos.TryGetProperty("fin", out _) ? "fin" : "grande");
+            s.PresenciaRecibida += (_, _) => llegan.Enqueue("presencia");
+            s.ReservaCambia += (_, _) => llegan.Enqueue("reserva");
+        });
+        await using Sala _i = inv;
+        await using ProcesoRed _h = hostil;
+        using CancellationTokenSource _f = fin;
+        await HastaQue(() => llegan.Contains("fin"), que: "el directo bueno");
+        Assert.Equal(["fin"], llegan);
+        await fin.CancelAsync();
+    }
+
+    [Fact]
+    public async Task Un_directo_de_mas_de_900_KiB_de_un_par_no_llega_a_la_app()
+    {
+        await using Sala anf = await AnfitrionAsync();
+        ConcurrentQueue<Directo> llegan = new();
+        anf.DirectoRecibido += d => llegan.Enqueue(d);
+        await using Crudo malo = await Crudo.EntrarAsync(anf);
+        await malo.MandarAsync(new JsonObject { ["type"] = "directo", ["epoca"] = 1, ["datos"] = new JsonObject { ["x"] = new string('a', 920 * 1024) } });
+        await malo.MandarAsync(new JsonObject { ["type"] = "directo", ["epoca"] = 1, ["datos"] = new JsonObject { ["fin"] = true } });
+        await HastaQue(() => !llegan.IsEmpty, que: "el pequeño");
+        await Task.Delay(300);
+        Assert.True(Assert.Single(llegan).Datos.GetProperty("fin").GetBoolean());
+    }
+
+    [Fact]
+    public async Task El_tamano_se_mide_como_sale_por_la_tuberia_y_no_como_llega()
+    {
+        // 400 000 «é» son 800 KB en UTF-8 pero 2,4 MB escapados: no caben en el orden que el anfitrión reparte.
+        await using Sala anf = await AnfitrionAsync();
+        await using Crudo malo = await Crudo.EntrarAsync(anf);
+        JsonObject c = Carga(Guid.NewGuid(), 0);
+        c["datos"] = new JsonObject { ["x"] = new string('é', 400_000) };
+        await malo.MandarAsync(c);
+        await HastaQue(() => malo.Mensajes("rechazado").Any(), que: "rechazo");
+        Assert.Equal("grande", malo.Mensajes("rechazado").Single().GetProperty("motivo").GetString());
+        Assert.Equal(0, anf.Seq);
+    }
+
+    [Fact]
+    public async Task La_cola_por_ordenar_tiene_tope_por_miembro_y_rechaza_lo_que_sobra()
+    {
+        TaskCompletionSource suelta = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using Sala anf = await AnfitrionAsync(async (_, _, _) => { await suelta.Task; return Veredicto.Si; });
+        await using Crudo malo = await Crudo.EntrarAsync(anf);
+        // 25 cargas de 850 KiB: 21 MB, más de los 16 MiB que caben en cola por miembro.
+        for (int i = 0; i < 25; i++)
+        {
+            JsonObject c = Carga(Guid.NewGuid(), i);
+            c["datos"] = new JsonObject { ["x"] = new string('a', 850 * 1024) };
+            await malo.MandarAAsync(c, anf.Clave);
+        }
+        await HastaQue(() => malo.Mensajes("rechazado").Any(r => r.GetProperty("motivo").GetString() == "ocupado"), que: "ocupado");
+        suelta.SetResult();
+        await Task.Delay(500);
+        int ocupados = malo.Mensajes("rechazado").Count(r => r.GetProperty("motivo").GetString() == "ocupado");
+        await HastaQue(() => anf.Seq == 25 - ocupados, segundos: 30, que: "las que cupieron");
     }
 
     [Fact]

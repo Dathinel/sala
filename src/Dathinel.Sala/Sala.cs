@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
@@ -14,7 +13,7 @@ namespace Dathinel.Sala;
 public sealed partial class Sala : IAsyncDisposable
 {
     public const int MaxCarga = 900 * 1024;
-    public const int HistorialMax = 4096;
+    public const int HistorialMax = Historial.MaxOrdenes;
     internal const double RitmoMedio = 20, RitmoRafaga = 40;
     internal static readonly TimeSpan ExcesoExpulsa = TimeSpan.FromSeconds(3);
 
@@ -28,9 +27,9 @@ public sealed partial class Sala : IAsyncDisposable
     private readonly Dictionary<string, Miembro> _pendientes = new(StringComparer.Ordinal);
     private readonly List<string> _conectados = [];
     private readonly Dictionary<string, string[]> _direccionesDe = new(StringComparer.Ordinal);
-    private readonly LinkedList<JsonObject> _historial = new();
-    private readonly Channel<(Miembro Autor, Guid Id, JsonElement Datos, string[] Reservas)> _porOrdenar =
-        Channel.CreateUnbounded<(Miembro, Guid, JsonElement, string[])>();
+    private readonly Historial _historial;
+    private readonly Channel<(string Autor, Guid Id, JsonElement Datos, string[] Reservas, long Bytes)> _porOrdenar =
+        Channel.CreateUnbounded<(string, Guid, JsonElement, string[], long)>();
     private readonly TaskCompletionSource _bienvenida = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task _lectura = Task.CompletedTask;
     private Task _orden = Task.CompletedTask;
@@ -44,6 +43,7 @@ public sealed partial class Sala : IAsyncDisposable
         _identidad = identidad;
         _opciones = opciones;
         _validar = validar ?? ((_, _, _) => ValueTask.FromResult(Veredicto.No("sin-validar", "Este equipo no valida cargas.")));
+        _historial = new Historial(opciones.Carpeta);
     }
 
     public bool EsAnfitrion { get; private set; }
@@ -76,12 +76,17 @@ public sealed partial class Sala : IAsyncDisposable
         Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>> validar, long epoca = 1, long seq = 0,
         Action<Sala>? suscribir = null, CancellationToken ct = default)
     {
+        Comprobar(opciones);
+        List<Miembro> lista = [.. anclados];
+        if (lista.Count >= opciones.MaxMiembros)
+            throw new ArgumentException($"Más anclados ({lista.Count}) de los que caben con el anfitrión ({opciones.MaxMiembros}).", nameof(anclados));
+        if (lista.Any(m => !Limites.EsClave(m.Clave) || !Limites.EsAlias(m.Alias)))
+            throw new ArgumentException("Un anclado tiene una clave o un alias inválido.", nameof(anclados));
         ProcesoRed red = await ProcesoRed.AbrirAsync(opciones.Ejecutable, ct).ConfigureAwait(false);
         Sala s = new(red, identidad, opciones, validar) { Epoca = epoca, Seq = seq, EsAnfitrion = true };
         suscribir?.Invoke(s);
         try
         {
-            List<Miembro> lista = [.. anclados];
             JsonObject p = Base(identidad, opciones);
             p["anclados"] = new JsonArray([.. lista.Select(m => (JsonNode)m.Clave)]);
             JsonElement r = await red.LlamarAsync("abrir-sala", p, ct).ConfigureAwait(false);
@@ -110,6 +115,7 @@ public sealed partial class Sala : IAsyncDisposable
         Action<Sala>? suscribir = null, Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>? validar = null,
         CancellationToken ct = default)
     {
+        Comprobar(opciones);
         ProcesoRed red = await ProcesoRed.AbrirAsync(opciones.Ejecutable, ct).ConfigureAwait(false);
         Sala s = new(red, identidad, opciones, validar) { Epoca = epoca, Seq = ultimoSeq };
         suscribir?.Invoke(s);
@@ -141,6 +147,14 @@ public sealed partial class Sala : IAsyncDisposable
     };
 
     private static string[] Textos(JsonElement lista) => [.. lista.EnumerateArray().Select(d => d.GetString()!)];
+
+    private static void Comprobar(OpcionesSala o)
+    {
+        if (o.MaxMiembros is < 1 or > 16) throw new ArgumentException("MaxMiembros va de 1 a 16.", nameof(o));
+        if (!Limites.EsAlias(o.Alias)) throw new ArgumentException("El alias tiene de 1 a 40 caracteres, sin caracteres de control.", nameof(o));
+        if (o.TopeValidar <= TimeSpan.Zero || o.ReservaInactiva <= TimeSpan.Zero || o.EsperaSuplente < TimeSpan.Zero)
+            throw new ArgumentException("Los tiempos de OpcionesSala tienen que ser positivos.", nameof(o));
+    }
 
     private void Arrancar()
     {
@@ -193,7 +207,9 @@ public sealed partial class Sala : IAsyncDisposable
         lock (_cerrojo)
         {
             _miembros.Remove(clave);
+            _pendientes.Remove(clave);
             SoltarTodas(clave);
+            Olvidar(clave);
         }
         await _red.LlamarAsync("expulsar", new JsonObject { ["clave"] = clave, ["vetar"] = true }, ct).ConfigureAwait(false);
         await DifundirMiembrosAsync().ConfigureAwait(false);
@@ -215,9 +231,8 @@ public sealed partial class Sala : IAsyncDisposable
         Guid id = Guid.NewGuid();
         if (EsAnfitrion)
         {
-            Miembro yo;
-            lock (_cerrojo) yo = _miembros[Clave];
-            await _porOrdenar.Writer.WriteAsync((yo, id, datos.Clone(), claves), ct).ConfigureAwait(false);
+            lock (_cerrojo) Renovar(Clave);
+            if (!Encolar(Clave, id, datos.Clone(), claves)) throw new SalaException("ocupado", "Hay demasiadas cargas por ordenar; reintenta.");
             return id;
         }
         JsonObject carga = new() { ["type"] = "carga", ["id"] = id.ToString(), ["datos"] = Nodo(datos), ["reservas"] = new JsonArray([.. claves.Select(c => (JsonNode)c)]) };
@@ -237,7 +252,9 @@ public sealed partial class Sala : IAsyncDisposable
     private static void ComprobarCarga(JsonElement datos)
     {
         if (datos.ValueKind != JsonValueKind.Object) throw new ArgumentException("La carga tiene que ser un objeto JSON.", nameof(datos));
-        if (Encoding.UTF8.GetByteCount(datos.GetRawText()) > MaxCarga)
+        if (Limites.Profundidad(datos) > Limites.ProfundidadCarga)
+            throw new ArgumentException($"La carga pasa de {Limites.ProfundidadCarga} niveles de anidamiento.", nameof(datos));
+        if (Limites.Bytes(datos) > MaxCarga)
             throw new SalaException("demasiado-grande", "La carga pasa de 900 KiB: va como blob.");
     }
 
@@ -330,9 +347,15 @@ public sealed partial class Sala : IAsyncDisposable
             case "sale":
                 {
                     string clave = ev.GetProperty("clave").GetString()!;
-                    lock (_cerrojo) _conectados.Remove(clave);
+                    lock (_cerrojo)
+                    {
+                        _conectados.Remove(clave);
+                        _presencias.Remove(clave);
+                    }
                     MiembroSale?.Invoke(clave, ev.GetProperty("motivo").GetString()!);
                     _salidas.Writer.TryWrite(clave);
+                    // Si era el suplente, los demás tienen que saber quién lo es ahora (§5.6).
+                    if (EsAnfitrion) await DifundirMiembrosAsync().ConfigureAwait(false);
                     break;
                 }
             case "cerrada":
@@ -355,17 +378,19 @@ public sealed partial class Sala : IAsyncDisposable
 
     private async Task DeAnfitrionAsync(JsonElement m)
     {
-        long epoca = m.TryGetProperty("epoca", out JsonElement e) ? e.GetInt64() : 0;
-        if (epoca < Epoca) return; // anfitrión viejo
-        switch (m.GetProperty("type").GetString())
+        // Todo se lee y se comprueba antes de tocar el estado: un mensaje con un campo mal no cambia nada (§5.2).
+        if (Limites.Entero(m, "epoca") is not { } epoca || epoca < Epoca) return; // anfitrión viejo o mensaje sin época
+        switch (Limites.Texto(m, "type"))
         {
             case "bienvenida":
                 {
-                    Epoca = epoca;
+                    if (Limites.Entero(m, "seq") is null || LeerMiembros(m) is not { } lista || LeerReservas(m, lista.Miembros) is not { } reservas) return;
                     lock (_cerrojo)
                     {
-                        LeerMiembros(m);
-                        LeerReservas(m.GetProperty("reservas"));
+                        Epoca = epoca;
+                        AplicarMiembros(lista);
+                        _reservas.Clear();
+                        foreach ((string c, string d) in reservas) _reservas[c] = new Reserva(d, Ahora);
                     }
                     _conectado = true;
                     _sinAnfitrionDesde = null;
@@ -373,53 +398,68 @@ public sealed partial class Sala : IAsyncDisposable
                     // Lo que quedó sin respuesta se manda otra vez con su mismo id: el anfitrión no lo aplica dos veces.
                     JsonObject[] otraVez;
                     lock (_cerrojo) otraVez = [.. _sinRespuesta.Values.Select(c => (JsonObject)c.DeepClone())];
-                    foreach (JsonObject c in otraVez) await IntentarAsync(MandarAsync(c, null, _fin.Token)).ConfigureAwait(false);
+                    foreach (JsonObject c in otraVez) await IntentarAsync(MandarAsync(c, _anfitrion, _fin.Token)).ConfigureAwait(false);
                     if (_reconectando) { _reconectando = false; Reconectada?.Invoke(); }
                     break;
                 }
             case "miembros":
-                lock (_cerrojo) LeerMiembros(m);
+                if (LeerMiembros(m) is { } l) lock (_cerrojo) AplicarMiembros(l);
                 break;
             case "orden":
                 {
-                    if (epoca > Epoca) Epoca = epoca;
-                    long seq = m.GetProperty("seq").GetInt64();
-                    if (seq <= Seq) { Respondida(m); return; }
-                    if (seq != Seq + 1)
-                    {
-                        await IntentarAsync(SincronizarAsync(_fin.Token)).ConfigureAwait(false);
-                        return;
-                    }
-                    Seq = seq;
-                    Respondida(m);
+                    if (Limites.Entero(m, "seq") is not { } seq || Limites.Id(m) is not { } id || Limites.Texto(m, "autor") is not { } autor
+                        || !Limites.EsClave(autor) || !m.TryGetProperty("datos", out JsonElement datos) || !Limites.Objeto(datos, MaxCarga)) return;
+                    bool hueco;
                     lock (_cerrojo)
                     {
-                        // También el invitado guarda el historial: lo necesita si toma el anfitrión.
-                        _historial.AddLast((JsonObject)JsonNode.Parse(m.GetRawText())!);
-                        if (_historial.Count > HistorialMax) _historial.RemoveFirst();
+                        if (seq <= Seq)
+                        {
+                            _sinRespuesta.Remove(id);
+                            return;
+                        }
+                        hueco = seq != Seq + 1;
+                        if (!hueco)
+                        {
+                            if (epoca > Epoca) Epoca = epoca;
+                            Seq = seq;
+                            _sinRespuesta.Remove(id);
+                            // También el invitado guarda el historial: lo necesita si toma el anfitrión.
+                            _historial.Agregar(seq, (JsonObject)JsonNode.Parse(m.GetRawText())!);
+                        }
                     }
-                    Ordenada?.Invoke(new Ordenado(epoca, seq, Guid.Parse(m.GetProperty("id").GetString()!), m.GetProperty("autor").GetString()!, m.GetProperty("datos").Clone()));
+                    if (hueco) await IntentarAsync(SincronizarAsync(_fin.Token)).ConfigureAwait(false);
+                    else Ordenada?.Invoke(new Ordenado(epoca, seq, id, autor, datos.Clone()));
                     break;
                 }
+            case "ya-ordenada":
+                if (Limites.Id(m) is { } ya) lock (_cerrojo) _sinRespuesta.Remove(ya);
+                break;
             case "rechazado":
                 {
-                    Guid id = Guid.Parse(m.GetProperty("id").GetString()!);
+                    if (Limites.Id(m) is not { } id || !Limites.EsMotivo(Limites.Texto(m, "motivo"))) return;
+                    string? detalle = Limites.Texto(m, "detalle");
+                    if (detalle is { Length: > Limites.MaxDetalle }) return;
                     bool mia;
                     lock (_cerrojo) mia = _sinRespuesta.Remove(id);
-                    if (mia) Rechazada?.Invoke(new Rechazo(id, m.GetProperty("motivo").GetString()!, m.TryGetProperty("detalle", out JsonElement d) ? d.GetString() : null));
+                    if (mia) Rechazada?.Invoke(new Rechazo(id, Limites.Texto(m, "motivo")!, detalle));
                     break;
                 }
             case "desfasado":
-                Desfasada?.Invoke(m.GetProperty("desde").GetInt64());
+                if (Limites.Entero(m, "desde") is { } desde) Desfasada?.Invoke(desde);
                 break;
             case "directo":
-                if (m.GetProperty("datos") is { ValueKind: JsonValueKind.Object } datos) DirectoRecibido?.Invoke(new Directo(_anfitrion, datos.Clone()));
+                if (m.TryGetProperty("datos", out JsonElement dd) && Limites.Objeto(dd, MaxCarga)) DirectoRecibido?.Invoke(new Directo(_anfitrion, dd.Clone()));
                 break;
             case "reserva":
-                AplicarReserva(m.GetProperty("clave").GetString()!, m.TryGetProperty("de", out JsonElement de) && de.ValueKind == JsonValueKind.String ? de.GetString() : null);
-                break;
+                {
+                    string? clave = Limites.Texto(m, "clave"), de = Limites.Texto(m, "de");
+                    if (clave is null || !ClaveDeReservaValida(clave) || (de is not null && !Limites.EsClave(de))) return;
+                    AplicarReserva(clave, de);
+                    break;
+                }
             case "presencia":
-                if (m.GetProperty("de").GetString() is { } quien && quien != Clave && m.GetProperty("datos") is { ValueKind: JsonValueKind.Object } pd)
+                if (Limites.Texto(m, "de") is { } quien && Limites.EsClave(quien) && quien != Clave
+                    && m.TryGetProperty("datos", out JsonElement pd) && Limites.Objeto(pd, MaxPresencia))
                     PresenciaRecibida?.Invoke(quien, pd.Clone());
                 break;
             case "traspaso":
@@ -428,24 +468,37 @@ public sealed partial class Sala : IAsyncDisposable
         }
     }
 
-    private void Respondida(JsonElement orden)
+    private sealed record ListaMiembros(Dictionary<string, Miembro> Miembros, (string Clave, string[] Direcciones)? Suplente);
+
+    /// <summary>Lee <c>miembros</c> y <c>suplente</c> sin tocar nada; null si algo no vale.</summary>
+    private static ListaMiembros? LeerMiembros(JsonElement m)
     {
-        if (Guid.TryParse(orden.GetProperty("id").GetString(), out Guid id))
-            lock (_cerrojo) _sinRespuesta.Remove(id);
+        if (!m.TryGetProperty("miembros", out JsonElement lista) || lista.ValueKind != JsonValueKind.Array || lista.GetArrayLength() > 16) return null;
+        Dictionary<string, Miembro> r = new(StringComparer.Ordinal);
+        foreach (JsonElement x in lista.EnumerateArray())
+        {
+            if (x.ValueKind != JsonValueKind.Object) return null;
+            string? clave = Limites.Texto(x, "clave"), alias = Limites.Texto(x, "alias"), rol = Limites.Texto(x, "rol");
+            if (!Limites.EsClave(clave) || !Limites.EsAlias(alias) || rol is not ("mirar" or "editar") || r.ContainsKey(clave!)) return null;
+            r[clave!] = new Miembro(clave!, alias!, rol == "mirar" ? Rol.Mirar : Rol.Editar);
+        }
+        (string, string[])? suplente = null;
+        if (m.TryGetProperty("suplente", out JsonElement s) && s.ValueKind != JsonValueKind.Null)
+        {
+            if (s.ValueKind != JsonValueKind.Object || Limites.Texto(s, "clave") is not { } sc || !r.ContainsKey(sc)
+                || Limites.Textos(s, "direcciones", Limites.MaxDirecciones) is not { } sd) return null;
+            suplente = (sc, sd);
+        }
+        return new ListaMiembros(r, suplente);
     }
 
-    private void LeerMiembros(JsonElement m)
+    /// <summary>Bajo el candado.</summary>
+    private void AplicarMiembros(ListaMiembros l)
     {
         _miembros.Clear();
-        foreach (JsonElement x in m.GetProperty("miembros").EnumerateArray())
-        {
-            string clave = x.GetProperty("clave").GetString()!;
-            _miembros[clave] = new Miembro(clave, x.GetProperty("alias").GetString()!, x.GetProperty("rol").GetString() == "mirar" ? Rol.Mirar : Rol.Editar);
-        }
+        foreach (KeyValuePair<string, Miembro> x in l.Miembros) _miembros[x.Key] = x.Value;
         if (_miembros.TryGetValue(Clave, out Miembro? yo)) Rol = yo.Rol;
-        _suplente = m.TryGetProperty("suplente", out JsonElement s) && s.ValueKind == JsonValueKind.Object
-            ? (s.GetProperty("clave").GetString()!, Textos(s.GetProperty("direcciones")))
-            : null;
+        _suplente = l.Suplente;
     }
 
     private static JsonNode Nodo(JsonElement e) => JsonSerializer.SerializeToNode(e, SalaJson.Default.JsonElement)!;
@@ -470,6 +523,7 @@ public sealed partial class Sala : IAsyncDisposable
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
         {
         }
+        lock (_cerrojo) _historial.Dispose();
         _fin.Dispose();
     }
 }

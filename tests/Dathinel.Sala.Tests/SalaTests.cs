@@ -130,4 +130,52 @@ public sealed class SalaTests
         Assert.Equal(anf.Clave, d2.De);
         Assert.Equal(0, anf.Seq);
     }
+
+    [Fact]
+    public async Task Un_validar_que_se_bloquea_sin_devolver_la_tarea_tambien_sale_por_tiempo()
+    {
+        int llamadas = 0;
+        await using Sala anf = await AnfitrionAsync((_, _, _) =>
+        {
+            // Trabajo síncrono antes de devolver el ValueTask: antes paraba el ordenador hasta que acababa.
+            if (Interlocked.Increment(ref llamadas) == 1) Thread.Sleep(TimeSpan.FromSeconds(8));
+            return ValueTask.FromResult(Veredicto.Si);
+        }, opciones: Opciones("Ana") with { TopeValidar = TimeSpan.FromSeconds(1) });
+        await using Sala luis = await InvitadoAsync(anf);
+        ConcurrentQueue<string> fin = new();
+        luis.Rechazada += r => fin.Enqueue("no:" + r.Motivo);
+        luis.Ordenada += o => fin.Enqueue("si");
+        DateTime t0 = DateTime.UtcNow;
+        await luis.EnviarAsync(Json("""{"a":1}"""));
+        await luis.EnviarAsync(Json("""{"a":2}"""));
+        await HastaQue(() => fin.Count == 2, que: "las dos respuestas");
+        Assert.Equal(["no:tiempo", "si"], fin);
+        Assert.True(DateTime.UtcNow - t0 < TimeSpan.FromSeconds(6), "la segunda no esperó al validador bloqueado");
+    }
+
+    [Fact]
+    public async Task Una_carga_no_entra_si_mientras_se_valida_su_autor_pierde_la_reserva_o_lo_expulsan()
+    {
+        SemaphoreSlim entra = new(0), suelta = new(0);
+        await using Sala anf = await AnfitrionAsync(async (_, _, _) => { entra.Release(); await suelta.WaitAsync(); return Veredicto.Si; });
+        await using Sala luis = await InvitadoAsync(anf);
+        await using Sala eva = await InvitadoAsync(anf, "Eva");
+        TaskCompletionSource<Rechazo> rechazo = new();
+        luis.Rechazada += r => rechazo.TrySetResult(r);
+
+        Assert.True(await luis.ReservarAsync("pista:a"));
+        await luis.EnviarAsync(Json("""{"a":1}"""), ["pista:a"]);
+        await entra.WaitAsync(TimeSpan.FromSeconds(20));
+        await luis.SoltarAsync("pista:a");
+        await HastaQue(() => !anf.Reservas.ContainsKey("pista:a"), que: "suelta");
+        suelta.Release();
+        Assert.Equal("reserva", (await rechazo.Task.WaitAsync(TimeSpan.FromSeconds(20))).Motivo);
+
+        await eva.EnviarAsync(Json("""{"b":1}"""));
+        await entra.WaitAsync(TimeSpan.FromSeconds(20));
+        await anf.ExpulsarAsync(eva.Clave);
+        suelta.Release();
+        await Task.Delay(500);
+        Assert.Equal(0, anf.Seq);
+    }
 }
