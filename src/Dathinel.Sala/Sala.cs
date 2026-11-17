@@ -66,7 +66,10 @@ public sealed partial class Sala : IAsyncDisposable
     public event Action<Rechazo>? Rechazada;
     public event Action<Directo>? DirectoRecibido;
     public event Action<long>? Desfasada;
+    /// <summary>Hay otro anfitrión con más autoridad (época mayor o, a igualdad, clave menor): época y su clave (§5.6).</summary>
     public event Action<long, string>? Superada;
+    /// <summary>Quien pedía entrar se fue, se le pasó el tiempo o se revocó su billete antes de decidir.</summary>
+    public event Action<string>? SolicitudRetirada;
     public event Action<string>? Cerrada;
 
     // ---------- abrir ----------
@@ -160,7 +163,8 @@ public sealed partial class Sala : IAsyncDisposable
     {
         _lectura = Task.Run(LeerAsync);
         _vigia = Task.Run(VigilarAsync);
-        if (EsAnfitrion) _orden = Task.Run(OrdenarAsync);
+        // Un solo ordenador en toda la vida de la sala: solo ordena mientras este equipo sea el anfitrión.
+        _orden = Task.Run(OrdenarAsync);
     }
 
     // ---------- anfitrión ----------
@@ -202,6 +206,33 @@ public sealed partial class Sala : IAsyncDisposable
         await _red.LlamarAsync("rechazar", new JsonObject { ["clave"] = clave }, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Cambia el rol de un miembro. Pasa por el mismo turno que el orden: la carga que se esté validando se confirma o
+    /// no con el rol nuevo. A «mirar» suelta sus reservas; los demás reciben la lista y el suplente que toque.
+    /// </summary>
+    public async Task CambiarRolAsync(string clave, Rol rol, CancellationToken ct = default)
+    {
+        if (!EsAnfitrion) throw new SalaException("invalid-parameters", "Solo el anfitrión cambia roles.");
+        if (clave == Clave) throw new SalaException("invalid-parameters", "El anfitrión siempre edita.");
+        await _mando.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            lock (_cerrojo)
+            {
+                if (!_miembros.TryGetValue(clave, out Miembro? m)) throw new SalaException("desconocido", "Esa clave no es de la sala.");
+                if (m.Rol == rol) return;
+                _miembros[clave] = m with { Rol = rol };
+                if (rol == Rol.Mirar) SoltarTodas(clave);
+            }
+        }
+        finally
+        {
+            _mando.Release();
+        }
+        await DifundirMiembrosAsync().ConfigureAwait(false);
+        await DifundirReservasDeAsync().ConfigureAwait(false);
+    }
+
     public async Task ExpulsarAsync(string clave, CancellationToken ct = default)
     {
         lock (_cerrojo)
@@ -229,16 +260,41 @@ public sealed partial class Sala : IAsyncDisposable
         string[] claves = [.. reservas ?? []];
         if (claves.Length > MaxReservas || claves.Any(c => !ClaveDeReservaValida(c))) throw new ArgumentException("Claves de reserva inválidas.", nameof(reservas));
         Guid id = Guid.NewGuid();
+        JsonObject carga = new() { ["type"] = "carga", ["id"] = id.ToString(), ["datos"] = Nodo(datos), ["reservas"] = new JsonArray([.. claves.Select(c => (JsonNode)c)]) };
+        // También el anfitrión apunta las suyas: si traspasa antes de ordenarlas, las manda al nuevo como invitado.
+        lock (_cerrojo) _sinRespuesta.Add(id, carga);
         if (EsAnfitrion)
         {
             lock (_cerrojo) Renovar(Clave);
-            if (!Encolar(Clave, id, datos.Clone(), claves)) throw new SalaException("ocupado", "Hay demasiadas cargas por ordenar; reintenta.");
-            return id;
+            if (Encolar(Clave, id, datos.Clone(), claves)) return id;
+            lock (_cerrojo) _sinRespuesta.Remove(id);
+            throw new SalaException("ocupado", "Hay demasiadas cargas por ordenar; reintenta.");
         }
-        JsonObject carga = new() { ["type"] = "carga", ["id"] = id.ToString(), ["datos"] = Nodo(datos), ["reservas"] = new JsonArray([.. claves.Select(c => (JsonNode)c)]) };
-        lock (_cerrojo) _sinRespuesta.Add(id, carga);
-        if (_conectado) await IntentarAsync(MandarAsync((JsonObject)carga.DeepClone(), null, ct)).ConfigureAwait(false);
+        if (_conectado) await MandarCargaAsync(id, carga, ct).ConfigureAwait(false);
         return id;
+    }
+
+    /// <summary>Vigía del invitado: las cargas que no salieron por cola llena, otra vez.</summary>
+    private async Task ReintentarCargasAsync()
+    {
+        if (!_conectado) return;
+        (Guid, JsonObject)[] otraVez;
+        lock (_cerrojo) otraVez = [.. _noSalieron.Where(_sinRespuesta.ContainsKey).Select(id => (id, _sinRespuesta[id]))];
+        foreach ((Guid id, JsonObject c) in otraVez) await MandarCargaAsync(id, c, _fin.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>Al anfitrión, dirigida: si su cola está llena queda apuntada y el vigía la reintenta.</summary>
+    private async Task MandarCargaAsync(Guid id, JsonObject carga, CancellationToken ct)
+    {
+        try
+        {
+            await MandarAsync((JsonObject)carga.DeepClone(), _anfitrion, ct).ConfigureAwait(false);
+            lock (_cerrojo) _noSalieron.Remove(id);
+        }
+        catch (SalaException)
+        {
+            lock (_cerrojo) _noSalieron.Add(id);
+        }
     }
 
     /// <summary>Mensaje fuera del orden (manifiestos, pedir huellas, anunciar blobs). El invitado solo lo manda al anfitrión.</summary>
@@ -260,7 +316,8 @@ public sealed partial class Sala : IAsyncDisposable
 
     private Task<JsonElement> MandarAsync(JsonObject mensaje, string? a, CancellationToken ct)
     {
-        mensaje["epoca"] ??= Epoca;
+        // La época del que manda ahora; la de aceptación de un orden va aparte, en «aceptada».
+        mensaje["epoca"] = Epoca;
         JsonObject p = new() { ["datos"] = mensaje };
         if (a is not null) p["a"] = new JsonArray(a);
         return _red.LlamarAsync("enviar", p, ct);
@@ -330,6 +387,14 @@ public sealed partial class Sala : IAsyncDisposable
                     SolicitudRecibida?.Invoke(s);
                     break;
                 }
+            case "solicitud-retirada":
+                {
+                    string clave = ev.GetProperty("clave").GetString()!;
+                    bool estaba;
+                    lock (_cerrojo) estaba = _pendientes.Remove(clave);
+                    if (estaba) SolicitudRetirada?.Invoke(clave);
+                    break;
+                }
             case "entra":
                 {
                     string clave = ev.GetProperty("clave").GetString()!;
@@ -353,7 +418,8 @@ public sealed partial class Sala : IAsyncDisposable
                         _presencias.Remove(clave);
                     }
                     MiembroSale?.Invoke(clave, ev.GetProperty("motivo").GetString()!);
-                    _salidas.Writer.TryWrite(clave);
+                    // Un sucesor que se va no aceptó el traspaso.
+                    RespuestaDeSucesor(clave, 0, 0, listo: false);
                     // Si era el suplente, los demás tienen que saber quién lo es ahora (§5.6).
                     if (EsAnfitrion) await DifundirMiembrosAsync().ConfigureAwait(false);
                     break;
@@ -379,15 +445,28 @@ public sealed partial class Sala : IAsyncDisposable
     private async Task DeAnfitrionAsync(JsonElement m)
     {
         // Todo se lee y se comprueba antes de tocar el estado: un mensaje con un campo mal no cambia nada (§5.2).
-        if (Limites.Entero(m, "epoca") is not { } epoca || epoca < Epoca) return; // anfitrión viejo o mensaje sin época
-        switch (Limites.Texto(m, "type"))
+        if (Limites.Entero(m, "epoca") is not { } epoca) return;
+        string? tipo = Limites.Texto(m, "type");
+        if (epoca < Epoca)
+        {
+            // Un anfitrión con menos autoridad que la que ya conocemos (§5.6).
+            if (tipo == "bienvenida") Superado(Epoca, _anfitrionDeEpoca);
+            return;
+        }
+        switch (tipo)
         {
             case "bienvenida":
                 {
                     if (Limites.Entero(m, "seq") is null || LeerMiembros(m) is not { } lista || LeerReservas(m, lista.Miembros) is not { } reservas) return;
+                    if (epoca == Epoca && _anfitrionDeEpoca is { } otro && otro != _anfitrion && string.CompareOrdinal(otro, _anfitrion) < 0)
+                    {
+                        Superado(Epoca, otro);
+                        return;
+                    }
                     lock (_cerrojo)
                     {
                         Epoca = epoca;
+                        _anfitrionDeEpoca = _anfitrion;
                         AplicarMiembros(lista);
                         _reservas.Clear();
                         foreach ((string c, string d) in reservas) _reservas[c] = new Reserva(d, Ahora);
@@ -398,7 +477,7 @@ public sealed partial class Sala : IAsyncDisposable
                     // Lo que quedó sin respuesta se manda otra vez con su mismo id: el anfitrión no lo aplica dos veces.
                     JsonObject[] otraVez;
                     lock (_cerrojo) otraVez = [.. _sinRespuesta.Values.Select(c => (JsonObject)c.DeepClone())];
-                    foreach (JsonObject c in otraVez) await IntentarAsync(MandarAsync(c, _anfitrion, _fin.Token)).ConfigureAwait(false);
+                    foreach (JsonObject c in otraVez) await MandarCargaAsync(Guid.Parse(c["id"]!.GetValue<string>()), c, _fin.Token).ConfigureAwait(false);
                     if (_reconectando) { _reconectando = false; Reconectada?.Invoke(); }
                     break;
                 }
@@ -427,8 +506,9 @@ public sealed partial class Sala : IAsyncDisposable
                             _historial.Agregar(seq, (JsonObject)JsonNode.Parse(m.GetRawText())!);
                         }
                     }
-                    if (hueco) await IntentarAsync(SincronizarAsync(_fin.Token)).ConfigureAwait(false);
-                    else Ordenada?.Invoke(new Ordenado(epoca, seq, id, autor, datos.Clone()));
+                    // Desfasado, el hueco no se pide: hasta que la app confirme su instantánea (§5.6).
+                    if (hueco && !_desfasado) await IntentarAsync(SincronizarAsync(_fin.Token)).ConfigureAwait(false);
+                    else if (!hueco) Ordenada?.Invoke(new Ordenado(Limites.Entero(m, "aceptada") ?? epoca, seq, id, autor, datos.Clone()));
                     break;
                 }
             case "ya-ordenada":
@@ -445,7 +525,15 @@ public sealed partial class Sala : IAsyncDisposable
                     break;
                 }
             case "desfasado":
-                if (Limites.Entero(m, "desde") is { } desde) Desfasada?.Invoke(desde);
+                if (Limites.Entero(m, "desde") is { } desde)
+                {
+                    _desfasado = true;
+                    Desfasada?.Invoke(desde);
+                }
+                break;
+            case "seq":
+                // El anfitrión avisa de que nos saltamos órdenes con la cola llena.
+                if (Limites.Entero(m, "seq") is { } ultimo && ultimo > Seq && !_desfasado) await IntentarAsync(SincronizarAsync(_fin.Token)).ConfigureAwait(false);
                 break;
             case "directo":
                 if (m.TryGetProperty("datos", out JsonElement dd) && Limites.Objeto(dd, MaxCarga)) DirectoRecibido?.Invoke(new Directo(_anfitrion, dd.Clone()));
@@ -462,10 +550,17 @@ public sealed partial class Sala : IAsyncDisposable
                     && m.TryGetProperty("datos", out JsonElement pd) && Limites.Objeto(pd, MaxPresencia))
                     PresenciaRecibida?.Invoke(quien, pd.Clone());
                 break;
-            case "traspaso":
-                await TraspasoRecibidoAsync(m).ConfigureAwait(false);
+            case "traspaso" or "traspaso-oferta" or "traspaso-cancelado":
+                await TraspasoRecibidoAsync(tipo, m).ConfigureAwait(false);
                 break;
         }
+    }
+
+    /// <summary>Hay otro anfitrión con más autoridad: si aún entrábamos, la entrada falla.</summary>
+    private void Superado(long epoca, string? anfitrion)
+    {
+        _bienvenida.TrySetException(new SalaException("superada", $"Esta sala quedó atrás: manda la época {epoca}."));
+        Superada?.Invoke(epoca, anfitrion ?? "");
     }
 
     private sealed record ListaMiembros(Dictionary<string, Miembro> Miembros, (string Clave, string[] Direcciones)? Suplente);

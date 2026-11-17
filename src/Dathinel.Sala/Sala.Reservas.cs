@@ -190,7 +190,12 @@ public sealed partial class Sala
         {
             while (await reloj.WaitForNextTickAsync(_fin.Token).ConfigureAwait(false))
             {
-                if (!EsAnfitrion) continue;
+                if (!EsAnfitrion)
+                {
+                    await ReintentarCargasAsync().ConfigureAwait(false);
+                    continue;
+                }
+                await AvisarAtrasadosAsync().ConfigureAwait(false);
                 long limite = Ahora - (long)_opciones.ReservaInactiva.TotalMilliseconds;
                 lock (_cerrojo)
                 {
