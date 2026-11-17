@@ -157,7 +157,7 @@ public sealed class SalaTests
     public async Task Una_carga_no_entra_si_mientras_se_valida_su_autor_pierde_la_reserva_o_lo_expulsan()
     {
         SemaphoreSlim entra = new(0), suelta = new(0);
-        await using Sala anf = await AnfitrionAsync(async (_, _, _) => { entra.Release(); await suelta.WaitAsync(); return Veredicto.Si; });
+        await using Sala anf = await AnfitrionAsync(async (_, _, _) => { entra.Release(); await suelta.WaitAsync(CancellationToken.None); return Veredicto.Si; });
         await using Sala luis = await InvitadoAsync(anf);
         await using Sala eva = await InvitadoAsync(anf, "Eva");
         TaskCompletionSource<Rechazo> rechazo = new();

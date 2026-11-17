@@ -21,10 +21,10 @@ public sealed class LimitesTests
     public void Los_limites_de_CSharp_son_los_de_los_vectores_compartidos_con_Rust()
     {
         JsonElement v = Vectores();
-        Assert.Equal(v.GetProperty("profundidadMarco").GetInt32(), Limites.ProfundidadMarco);
-        Assert.Equal(v.GetProperty("profundidadCarga").GetInt32(), Limites.ProfundidadCarga);
-        Assert.Equal(v.GetProperty("cargaMaxBytes").GetInt32(), Sala.MaxCarga);
-        Assert.Equal(v.GetProperty("presenciaMaxBytes").GetInt32(), Sala.MaxPresencia);
+        Assert.Equal(Limites.ProfundidadMarco, v.GetProperty("profundidadMarco").GetInt32());
+        Assert.Equal(Limites.ProfundidadCarga, v.GetProperty("profundidadCarga").GetInt32());
+        Assert.Equal(Sala.MaxCarga, v.GetProperty("cargaMaxBytes").GetInt32());
+        Assert.Equal(Sala.MaxPresencia, v.GetProperty("presenciaMaxBytes").GetInt32());
         Assert.Equal(v.GetProperty("profundidadLocal").GetInt32(), Limites.ProfundidadMarco + v.GetProperty("envoltorioLocal").GetInt32());
         foreach (JsonElement caso in v.GetProperty("casos").EnumerateArray())
         {
