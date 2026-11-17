@@ -4,7 +4,7 @@ El código de Sala es MIT (`LICENSE`). No entra nada GPL ni no libre.
 
 ## `dathinel-red` (Rust)
 
-375 crates fijados en `red/Cargo.lock`, empezando por **iroh 1.4.1** (MIT o Apache-2.0). La lista completa con la licencia de cada uno está en [docs/licencias-crates.md](docs/licencias-crates.md); `red/deny.toml` fija qué licencias se admiten y la CI lo comprueba con `cargo deny check` en cada PR.
+389 crates fijados en `red/Cargo.lock`, empezando por **iroh 1.4.1** y **iroh-mdns-address-lookup 0.6.1** (MIT o Apache-2.0; este trae `swarm-discovery`, Apache-2.0). La lista completa con la licencia de cada uno está en [docs/licencias-crates.md](docs/licencias-crates.md); `red/deny.toml` fija qué licencias se admiten y la CI lo comprueba con `cargo deny check` en cada PR.
 
 | Licencia | Cuántos | Nota |
 |---|---|---|
