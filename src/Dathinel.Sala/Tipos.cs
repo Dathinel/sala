@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Dathinel.Sala;
@@ -29,7 +28,8 @@ public sealed record Solicitud(string Clave, string Alias)
 public sealed record Directo(string De, JsonElement Datos);
 
 /// <summary>Cómo sale a la red: relés de n0 (por defecto), ninguno (solo direcciones directas) o un relé propio.</summary>
-public sealed record Red(string Rele = "n0", bool SoloRele = false)
+/// <param name="Mdns">Descubrir al anfitrión en la red local por su clave, sin direcciones (anuncia el equipo en la red local).</param>
+public sealed record Red(string Rele = "n0", bool SoloRele = false, bool Mdns = false)
 {
     public static readonly Red N0 = new();
     public static readonly Red SinRele = new("ninguno");
@@ -42,13 +42,10 @@ public sealed record OpcionesSala(string App, string AppVersion, string Alias, s
     public Red Red { get; init; } = Red.N0;
     public TimeSpan TopeValidar { get; init; } = TimeSpan.FromSeconds(30);
     public int MaxMiembros { get; init; } = 16;
-}
-
-/// <summary>Clave privada del equipo (Ed25519 de iroh) en 64 hex.</summary>
-public static class Identidad
-{
-    // shortcut: solo genera; guardarla con DPAPI (Windows) o en un archivo 0600 (Unix) llega con la integración en las apps.
-    public static string Nueva() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+    /// <summary>Una reserva sin actividad de su dueño se suelta sola pasado este tiempo.</summary>
+    public TimeSpan ReservaInactiva { get; init; } = TimeSpan.FromSeconds(120);
+    /// <summary>Sin anfitrión este tiempo, el suplente puede tomar la sala y los demás lo buscan.</summary>
+    public TimeSpan EsperaSuplente { get; init; } = TimeSpan.FromSeconds(60);
 }
 
 /// <summary>Error de la sala: rechazo del anfitrión, versión distinta, billete inválido, sin conexión…</summary>

@@ -78,15 +78,16 @@ public sealed class HostilesTests
     {
         await using Sala anf = await AnfitrionAsync();
         await using Crudo malo = await Crudo.EntrarAsync(anf);
-        // 60/s en tandas de 6 cada 100 ms: el triple del ritmo de la sala (20/s) y menos que el del transporte (100/s).
+        // 80/s en tandas de 8 cada 100 ms, mandadas a la vez: cuatro veces el ritmo de la sala (20/s) y menos que el
+        // del transporte (100/s). En serie, en la CI de Windows cada llamada tardaba tanto que no se pasaba del doble.
         using PeriodicTimer reloj = new(TimeSpan.FromMilliseconds(100));
-        DateTime fin = DateTime.UtcNow.AddSeconds(8);
+        DateTime fin = DateTime.UtcNow.AddSeconds(10);
         int n = 0;
         while (DateTime.UtcNow < fin && !malo.Cerrada && await reloj.WaitForNextTickAsync())
         {
             try
             {
-                for (int i = 0; i < 6; i++) await malo.MandarAsync(Carga(Guid.NewGuid(), n++));
+                await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => malo.MandarAsync(Carga(Guid.NewGuid(), Interlocked.Increment(ref n)))));
             }
             catch (SalaException) { break; }
         }

@@ -43,6 +43,10 @@ internal sealed class ProcesoRed : IAsyncDisposable
         {
             throw new SalaException("sin-red", "dathinel-red dejó de responder: " + ex.Message, ex);
         }
+        catch (ObjectDisposedException ex)
+        {
+            throw new SalaException("sin-red", "dathinel-red ya está cerrado.", ex);
+        }
         finally
         {
             _turno.Release();
@@ -55,4 +59,6 @@ internal sealed class ProcesoRed : IAsyncDisposable
 
 [System.Text.Json.Serialization.JsonSerializable(typeof(JsonObject))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(JsonElement))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(JsonArray))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(JsonNode))]
 internal sealed partial class SalaJson : System.Text.Json.Serialization.JsonSerializerContext;

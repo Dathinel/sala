@@ -4,6 +4,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 
 | Crate | Versión | Licencia |
 |---|---|---|
+| acto | 0.8.2 | Apache-2.0 OR MIT |
 | aead | 0.5.2 | MIT OR Apache-2.0 |
 | aes | 0.8.4 | MIT OR Apache-2.0 |
 | aes-gcm | 0.10.3 | Apache-2.0 OR MIT |
@@ -22,6 +23,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
+| block-buffer | 0.10.4 | MIT OR Apache-2.0 |
 | block-buffer | 0.12.1 | MIT OR Apache-2.0 |
 | block2 | 0.6.2 | MIT |
 | bumpalo | 3.20.4 | MIT OR Apache-2.0 |
@@ -44,6 +46,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
+| critical-section | 1.2.0 | MIT OR Apache-2.0 |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | ctr | 0.9.2 | MIT OR Apache-2.0 |
@@ -58,6 +61,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | derive_more | 2.1.1 | MIT |
 | derive_more-impl | 2.1.1 | MIT |
 | diatomic-waker | 0.2.3 | MIT OR Apache-2.0 |
+| digest | 0.10.7 | MIT OR Apache-2.0 |
 | digest | 0.11.3 | MIT OR Apache-2.0 |
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
@@ -97,6 +101,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | h2 | 0.4.20 | MIT |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
+| hickory-proto | 0.26.3 | MIT OR Apache-2.0 |
 | http | 1.5.0 | MIT OR Apache-2.0 |
 | http-body | 1.1.0 | MIT |
 | http-body-util | 0.1.5 | MIT |
@@ -126,6 +131,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | iroh | 1.4.1 | MIT OR Apache-2.0 |
 | iroh-base | 1.4.1 | MIT OR Apache-2.0 |
 | iroh-dns | 1.4.1 | MIT OR Apache-2.0 |
+| iroh-mdns-address-lookup | 0.6.1 | MIT OR Apache-2.0 |
 | iroh-metrics | 1.0.2 | MIT OR Apache-2.0 |
 | iroh-metrics-derive | 1.0.1 | MIT OR Apache-2.0 |
 | iroh-relay | 1.4.1 | MIT OR Apache-2.0 |
@@ -140,6 +146,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
 | litemap | 0.8.3 | Unicode-3.0 |
+| lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.35 | MIT OR Apache-2.0 |
 | loom | 0.7.3 | MIT |
 | lru | 0.18.5 | MIT |
@@ -185,6 +192,8 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | openssl-probe | 0.2.2 | MIT OR Apache-2.0 |
 | papaya | 0.2.5 | MIT |
 | parking | 2.2.1 | Apache-2.0 OR MIT |
+| parking_lot | 0.12.5 | MIT OR Apache-2.0 |
+| parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
 | paste | 1.0.15 | MIT OR Apache-2.0 |
 | pem-rfc7468 | 1.0.0 | Apache-2.0 OR MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
@@ -214,6 +223,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | rand_core | 0.10.1 | MIT OR Apache-2.0 |
 | rand_core | 0.9.5 | MIT OR Apache-2.0 |
 | rand_pcg | 0.10.2 | MIT OR Apache-2.0 |
+| redox_syscall | 0.5.18 | MIT |
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | reqwest | 0.13.5 | MIT OR Apache-2.0 |
@@ -231,6 +241,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | same-file | 1.0.6 | Unlicense/MIT |
 | schannel | 0.1.30 | MIT |
 | scoped-tls | 1.0.1 | MIT/Apache-2.0 |
+| scopeguard | 1.2.0 | MIT OR Apache-2.0 |
 | security-framework | 3.7.0 | MIT OR Apache-2.0 |
 | security-framework-sys | 2.17.0 | MIT OR Apache-2.0 |
 | seize | 0.5.1 | MIT |
@@ -243,6 +254,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | serde_json | 1.0.154 | MIT OR Apache-2.0 |
 | serdect | 0.4.3 | Apache-2.0 OR MIT |
 | sha1_smol | 1.0.1 | BSD-3-Clause |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | sha2 | 0.11.1 | MIT OR Apache-2.0 |
 | sharded-slab | 0.1.7 | MIT |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
@@ -254,6 +266,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | slab | 0.4.12 | MIT |
 | slotmap | 1.1.1 | Zlib |
 | smallvec | 1.16.5 | MIT OR Apache-2.0 |
+| smol_str | 0.1.24 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | sorted-index-buffer | 0.2.1 | MIT OR Apache-2.0 |
 | spez | 0.1.2 | BSD-2-Clause |
@@ -263,6 +276,7 @@ Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de
 | strum | 0.28.0 | MIT |
 | strum_macros | 0.28.0 | MIT |
 | subtle | 2.6.1 | BSD-3-Clause |
+| swarm-discovery | 0.6.6 | Apache-2.0 |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.10 | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Apache-2.0 |

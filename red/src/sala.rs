@@ -33,7 +33,7 @@ const RITMO_MEDIO: f64 = 100.0;
 const RITMO_RAFAGA: f64 = 400.0;
 
 /// Códigos de cierre de conexión QUIC (los ve el otro lado como motivo de `sale` o `cerrada`).
-mod cierre {
+pub(crate) mod cierre {
     pub const CERRO: u32 = 1;
     pub const EXPULSADO: u32 = 2;
     pub const REVOCADO: u32 = 3;
@@ -41,6 +41,7 @@ mod cierre {
     pub const MARCO: u32 = 5;
     pub const REEMPLAZADA: u32 = 6;
     pub const SALUDO: u32 = 7;
+    pub const TRASPASO: u32 = 8;
 }
 
 fn motivo(codigo: u64) -> &'static str {
@@ -50,6 +51,7 @@ fn motivo(codigo: u64) -> &'static str {
         cierre::RITMO => "ritmo",
         cierre::MARCO => "marco",
         cierre::REEMPLAZADA => "reemplazada",
+        cierre::TRASPASO => "traspaso",
         _ => "cerro",
     }
 }
@@ -76,31 +78,32 @@ struct BilleteVivo {
     uso: Uso,
 }
 
-struct Par {
-    conn: Connection,
+pub(crate) struct Par {
+    pub(crate) conn: Connection,
     tx: mpsc::UnboundedSender<Vec<u8>>,
     cola: Arc<AtomicUsize>,
+    callada: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
-struct Estado {
+pub(crate) struct Estado {
     anclados: HashSet<EndpointId>,
     vetados: HashSet<EndpointId>,
     billetes: HashMap<String, BilleteVivo>,
     pendientes: HashMap<EndpointId, (oneshot::Sender<bool>, String)>,
-    pares: HashMap<EndpointId, Par>,
+    pub(crate) pares: HashMap<EndpointId, Par>,
     falsos: HashMap<String, VecDeque<Instant>>,
 }
 
 pub struct Sala {
-    ep: Endpoint,
-    anfitrion: bool,
+    pub(crate) ep: Endpoint,
+    pub(crate) anfitrion: AtomicBool,
     app: String,
     app_version: String,
     rele: Option<String>,
-    #[allow(dead_code)] // los blobs (siguiente bloque) confinan sus rutas a esta carpeta
-    carpeta: PathBuf,
-    estado: Mutex<Estado>,
+    pub(crate) carpeta: PathBuf,
+    pub(crate) estado: Mutex<Estado>,
+    pub(crate) blobs: Mutex<crate::blobs::Blobs>,
     eventos: Mutex<VecDeque<Value>>,
     hay_eventos: Notify,
     /// Bytes de mensajes en `eventos` que la app aún no leyó.
@@ -148,6 +151,11 @@ pub async fn llamar(funcion: &str, p: Value, cancelar: Arc<Notify>) -> Result<Va
         "enviar" => actual()?.enviar(&p),
         "recibir" => actual()?.recibir(&p, cancelar).await,
         "estado" => Ok(actual()?.estado()),
+        "ascender" => actual()?.ascender(&p),
+        "blob-ofrecer" => actual()?.blob_ofrecer(&p),
+        "blob-retirar" => actual()?.blob_retirar(&p),
+        "blob-pedir" => actual()?.blob_pedir(&p),
+        "blob-cancelar" => actual()?.blob_cancelar(&p),
         "cerrar" => {
             cerrar_todo().await;
             Ok(Value::Null)
@@ -181,6 +189,23 @@ fn texto_corto(p: &Value, campo: &str) -> Result<String, Fallo> {
 
 /// `abrir-sala` (anfitrión) o `unirse` (invitado): crea el endpoint con la red pedida.
 async fn abrir(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<Value, Fallo> {
+    let existente = ranura().lock().unwrap().clone();
+    if let Some(sala) = existente.filter(|s| !anfitrion && !s.es_anfitrion()) {
+        if ABRIENDO.swap(true, Ordering::SeqCst) {
+            return fallo("ocupado", "Ya se está conectando.");
+        }
+        sala.callar_pares(cierre::REEMPLAZADA);
+        let alias = texto_corto(&p, "alias");
+        let r = match alias {
+            Ok(alias) => tokio::select! {
+                r = sala.clone().entrar(&p, alias) => r,
+                _ = cancelar.notified() => fallo("cancelled", "Cancelado."),
+            },
+            Err(e) => Err(e),
+        };
+        ABRIENDO.store(false, Ordering::SeqCst);
+        return r;
+    }
     if ranura().lock().unwrap().is_some() || ABRIENDO.swap(true, Ordering::SeqCst) {
         return fallo("ya-abierta", "Ya hay una sala abierta en este proceso.");
     }
@@ -204,12 +229,7 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         );
     }
     let red = p.get("red").cloned().unwrap_or(json!({}));
-    if red.get("mdns").and_then(Value::as_bool).unwrap_or(false) {
-        return fallo(
-            "invalid-parameters",
-            "mDNS todavía no está: iroh 1.4 lo trae en un crate aparte (fase de red local).",
-        );
-    }
+    let mdns = red.get("mdns").and_then(Value::as_bool).unwrap_or(false);
     let rele = marco::texto(&red, "rele").unwrap_or("n0").to_string();
     let mut b = match rele.as_str() {
         "n0" => Endpoint::builder(presets::N0),
@@ -237,17 +257,20 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         }
         b = b.clear_ip_transports();
     }
-    b = b.secret_key(secreta);
-    if anfitrion {
-        b = b.alpns(vec![ALPN.to_vec()]);
+    if mdns {
+        b = b.address_lookup(
+            iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name("dathinel-sala"),
+        );
     }
+    b = b.secret_key(secreta);
+    b = b.alpns(vec![ALPN.to_vec()]);
     let ep = b
         .bind()
         .await
         .map_err(|e| Fallo("sin-conexion", format!("No se pudo abrir la red: {e}")))?;
     let sala = Arc::new(Sala {
         ep,
-        anfitrion,
+        anfitrion: AtomicBool::new(anfitrion),
         app,
         app_version,
         rele: (rele != "ninguno").then_some(rele.clone()),
@@ -256,6 +279,7 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         eventos: Mutex::default(),
         hay_eventos: Notify::new(),
         pendiente: AtomicUsize::new(0),
+        blobs: Mutex::default(),
     });
 
     if anfitrion {
@@ -313,7 +337,11 @@ impl Sala {
         d
     }
 
-    fn evento(&self, v: Value) {
+    pub(crate) fn es_anfitrion(&self) -> bool {
+        self.anfitrion.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn evento(&self, v: Value) {
         self.eventos.lock().unwrap().push_back(v);
         self.hay_eventos.notify_one();
     }
@@ -321,8 +349,8 @@ impl Sala {
     fn billete(&self, p: &Value) -> Result<Value, Fallo> {
         self.solo_anfitrion()?;
         let caduca_en = p.get("caducaEn").and_then(Value::as_u64).unwrap_or(86_400);
-        if !(60..=604_800).contains(&caduca_en) {
-            return fallo("invalid-parameters", "«caducaEn» va de 60 s a 7 días.");
+        if !(5..=604_800).contains(&caduca_en) {
+            return fallo("invalid-parameters", "«caducaEn» va de 5 s a 7 días.");
         }
         let mut secreto = [0u8; 32];
         rand::rng().fill_bytes(&mut secreto);
@@ -512,11 +540,51 @@ impl Sala {
                 json!({"clave": hex::de_clave(k), "via": via, "rttMs": rtt})
             })
             .collect();
-        json!({"clave": hex::de_clave(&self.ep.id()), "rol": if self.anfitrion {"anfitrion"} else {"invitado"}, "pares": pares})
+        json!({"clave": hex::de_clave(&self.ep.id()), "direcciones": self.direcciones(), "rol": if self.es_anfitrion() {"anfitrion"} else {"invitado"}, "pares": pares})
+    }
+
+    /// El invitado pasa a anfitrión con el mismo endpoint (mismas direcciones): traspaso o suplente (api.md §5.6).
+    fn ascender(self: &Arc<Self>, p: &Value) -> Result<Value, Fallo> {
+        if self.es_anfitrion() {
+            return fallo("invalid-parameters", "Ya es el anfitrión.");
+        }
+        let mut anclados = HashSet::new();
+        for a in p
+            .get("anclados")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            anclados.insert(a.as_str().and_then(hex::clave).ok_or(Fallo(
+                "invalid-parameters",
+                "Clave anclada inválida.".into(),
+            ))?);
+        }
+        self.estado.lock().unwrap().anclados = anclados;
+        self.callar_pares(cierre::TRASPASO);
+        self.anfitrion.store(true, Ordering::SeqCst);
+        tokio::spawn(self.clone().aceptar_conexiones());
+        Ok(json!({"clave": hex::de_clave(&self.ep.id()), "direcciones": self.direcciones()}))
+    }
+
+    /// Cierra todas las conexiones sin avisar a la app (ella pidió el cambio) con `codigo` para el otro lado.
+    fn callar_pares(&self, codigo: u32) {
+        let viejos: Vec<Par> = self
+            .estado
+            .lock()
+            .unwrap()
+            .pares
+            .drain()
+            .map(|(_, par)| par)
+            .collect();
+        for par in viejos {
+            par.callada.store(true, Ordering::SeqCst);
+            par.conn.close(VarInt::from_u32(codigo), b"");
+        }
     }
 
     fn solo_anfitrion(&self) -> Result<(), Fallo> {
-        if self.anfitrion {
+        if self.es_anfitrion() {
             Ok(())
         } else {
             fallo("invalid-parameters", "Solo el anfitrión puede hacerlo.")
@@ -631,10 +699,13 @@ impl Sala {
                 json!({"tipo":"solicitud","clave":hex::de_clave(&quien),"alias":alias,
                 "appVersion":self.app_version,"billete":billete_id}),
             );
+            let mut sonda = [0u8; 1];
             let decision = tokio::select! {
                 d = rx => d.ok(),
                 _ = tokio::time::sleep(ESPERA_APROBACION) => None,
                 _ = conn.closed() => None,
+                // Mientras espera, el invitado no manda nada: si el canal da algo (cierre, reinicio), se fue.
+                _ = recibo.read(&mut sonda) => None,
             };
             let aceptado = {
                 let mut e = self.estado.lock().unwrap();
@@ -752,12 +823,13 @@ impl Sala {
             )
         };
         let anfitrion = destino.id;
-        let conn = tokio::time::timeout(Duration::from_secs(30), self.ep.connect(destino, ALPN))
+        let dirs_anfitrion: Vec<String> = destino.ip_addrs().map(|a| a.to_string()).collect();
+        let conn = tokio::time::timeout(Duration::from_secs(10), self.ep.connect(destino, ALPN))
             .await
             .map_err(|_| {
                 Fallo(
                     "sin-conexion",
-                    "No se encontró al anfitrión en 30 s.".into(),
+                    "No se encontró al anfitrión en 10 s.".into(),
                 )
             })?
             .map_err(|e| {
@@ -802,13 +874,15 @@ impl Sala {
             Some("admitido") => {
                 let (via, _) = via(&conn);
                 self.registrar(conn, envio, recibo);
-                Ok(json!({"anfitrion": hex::de_clave(&anfitrion), "via": via}))
+                Ok(json!({"anfitrion": hex::de_clave(&anfitrion), "via": via,
+                    "anfitrionDirecciones": dirs_anfitrion, "direcciones": self.direcciones()}))
             }
             Some("adios") => {
                 let code = match marco::texto(&r, "motivo") {
                     Some("version") => "version",
                     Some("billete-invalido") => "billete-invalido",
                     Some("llena") => "llena",
+                    Some("ocupado") => "ocupado",
                     _ => "rechazado",
                 };
                 fallo(
@@ -833,6 +907,7 @@ impl Sala {
         let quien = conn.remote_id();
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let cola = Arc::new(AtomicUsize::new(0));
+        let callada = Arc::new(AtomicBool::new(false));
         let viejo = {
             let mut e = self.estado.lock().unwrap();
             if e.vetados.contains(&quien) {
@@ -846,6 +921,7 @@ impl Sala {
                     conn: conn.clone(),
                     tx,
                     cola: cola.clone(),
+                    callada: callada.clone(),
                 },
             )
         };
@@ -865,6 +941,8 @@ impl Sala {
             }
         });
 
+        tokio::spawn(crate::blobs::servir(self.clone(), conn.clone()));
+
         let sala = self.clone();
         tokio::spawn(async move {
             let clave = hex::de_clave(&quien);
@@ -878,7 +956,7 @@ impl Sala {
                             .min(RITMO_RAFAGA);
                         ultimo = t;
                         // Solo el anfitrión limita: él reparte lo de todos, así que un invitado recibe más de 100/s.
-                        if sala.anfitrion && fichas < 1.0 {
+                        if sala.es_anfitrion() && fichas < 1.0 {
                             break Some(cierre::RITMO);
                         }
                         fichas -= 1.0;
@@ -922,9 +1000,9 @@ impl Sala {
                     e.pares.remove(&quien);
                 }
             }
-            if !reemplazada {
+            if !reemplazada && !callada.load(Ordering::SeqCst) {
                 sala.evento(json!({"tipo":"sale","clave":clave,"motivo":mot}));
-                if !sala.anfitrion {
+                if !sala.es_anfitrion() {
                     let m = if mot == "cerro" {
                         "anfitrion-cerro"
                     } else {

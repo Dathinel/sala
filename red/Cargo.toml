@@ -14,6 +14,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 rand = "0.9"
+sha2 = "0.10"
+iroh-mdns-address-lookup = "=0.6.1"
 
 [profile.release]
 lto = true

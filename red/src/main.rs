@@ -1,6 +1,7 @@
 //! dathinel-red: el transporte de Sala. Lo abre la app como un módulo (`--rodaje-pipe <nombre o ruta>`).
 
 mod billete;
+mod blobs;
 mod hex;
 mod marco;
 mod modulo;

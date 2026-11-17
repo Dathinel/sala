@@ -26,6 +26,11 @@ const FUNCIONES: &[(&str, &str, bool)] = &[
     ("enviar", "Mandar un mensaje de sala", false),
     ("recibir", "Esperar lo que llega de la red", true),
     ("estado", "Estado de la sala", false),
+    ("ascender", "Pasar de invitado a anfitrión", false),
+    ("blob-ofrecer", "Ofrecer blobs por huella", false),
+    ("blob-retirar", "Retirar blobs ofrecidos", false),
+    ("blob-pedir", "Bajar un blob de un par", false),
+    ("blob-cancelar", "Cortar una descarga", false),
     ("cerrar", "Cerrar la sala", false),
 ];
 

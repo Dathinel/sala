@@ -10,9 +10,10 @@ Capa común de trabajo en grupo de Rodaje y Unicomp (decisión de Daniel, 15-nov
 - `src/Rodaje.Modules.Protocol` es copia de Rodaje (`91eab90a`) hasta el bloque de integración, que lo mueve y deja a Rodaje usándolo desde el submódulo. No editarlo aquí sin llevar el cambio a Rodaje.
 
 ## Estado
-16-nov: API v1 revisada por Unicomp y Gemini y unida (#1). Fase B: `dathinel-red` (abrir, billetes, aceptar/rechazar/expulsar/revocar, enviar/recibir, estado, cerrar) y `Dathinel.Sala` (miembros y roles, orden central con `validar` asíncrono y tope, directos, ritmo, ids repetidos, épocas, desfasado), 22 pruebas de C# con procesos reales y 6 de Rust, en verde en Windows, Ubuntu 24.04 y macOS 15 (#2). Huella de cuatro palabras con `palabras.txt` (2048, prefijos de 4 letras distintos; Gemini). Revisión del núcleo por Gemini: 9 de sus 14 hallazgos arreglados; quedan (sin hacer) avisar antes de que un par perdido a mitad de la aprobación libere su billete y pruebas de billete caducado, de más de 4 solicitudes y de la conexión 17.
+- 16-nov: API v1 revisada por Unicomp y Gemini (#1); núcleo de la fase B (#2).
+- 17-nov, bloque 2 (#4): reservas por clave y presencia; reconexión automática con cargas pendientes (mismo endpoint: `unirse` otra vez en el mismo proceso); traspaso con el historial como blob y `ascender` con el mismo endpoint; suplente tras `EsperaSuplente`; blobs por huella en streams aparte (rutas confinadas a la carpeta de sala, tope antes de abrir el stream, segunda comprobación en C#); `Identidad.CargarOCrear` (DPAPI en Windows, archivo 0600 en Linux y macOS, sin llavero; hecho por Devin); mDNS con `iroh-mdns-address-lookup` 0.6.1; billete libre si el invitado se va esperando aprobación; pruebas de billete caducado, más de 4 solicitudes y conexión 17. 41 pruebas de C# y 7 de Rust en la CI de los tres sistemas; la de mDNS no corre en el Mac de la CI (macOS 15 pide permiso de «Red local»). Escrito sin compilar en local (pausa del equipo): todo verificado solo en la CI.
 
 ## Siguiente
-1. Reservas y presencia (§5.4, §5.5), reconexión automática con cargas pendientes (§5.6), traspaso y suplente, blobs (§5.7: `blob-ofrecer` en lista, `blob-pedir` por eventos, `carpeta` confinada).
-2. `Identidad` guardada con DPAPI / archivo 0600; mDNS (crate aparte de iroh) para la fase de red local de Rodaje.
+1. Revisión del bloque 2 por otro modelo (no se lanzó: pausa de la Cuadrilla).
+2. Probar mDNS en un Mac de verdad y decidir cómo pedir el permiso de red local en la app de Mac.
 3. Bloque de integración: mover `Rodaje.Modules.Protocol` con su historial y poner `externo/sala` en Rodaje y Unicomp.

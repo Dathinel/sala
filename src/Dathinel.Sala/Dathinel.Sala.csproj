@@ -4,6 +4,8 @@
   <PropertyGroup>
     <RootNamespace>Dathinel.Sala</RootNamespace>
     <IsAotCompatible>true</IsAotCompatible>
+    <!-- Identidad.cs llama a DPAPI con LibraryImport, cuyo código generado necesita unsafe. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
   </PropertyGroup>
