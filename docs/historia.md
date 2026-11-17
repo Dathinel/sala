@@ -1,0 +1,17 @@
+# Historia del contrato de Sala
+
+Lo que cambió el contrato (`docs/api.md`) y por qué. El contrato solo guarda las reglas vigentes.
+
+## Revisiones de la API v1 (16-nov-2026)
+
+**Sesión de Unicomp** (buzón, «Sesión de Unicomp: revisión de la API de sala»): la adopta y cambia su diseño a `dathinel-red` y `dathinel/sala/1`. Incorporado: mensaje `directo` fuera del orden, `validar` asíncrono con `TopeValidar` y rechazo `tiempo`, `blob-ofrecer` en lista y archivo ofrecido inmutable, historial de reposición en el traspaso, una carga por paso de deshacer (§5.8), y la prueba hostil del blob mayor que el tope.
+
+**Gemini** (`gemini-3.8-flash-high`, lectura, 14 hallazgos). Incorporado: el suplente solo toma la sala tras 60 s sin anfitrión y solo lo siguen quienes también lo perdieron (1); descargas de blobs sin ocupar una llamada de la tubería, con eventos `blob-avance` y `blob-fin` (2); lote de `recibir` cortado antes de 1000 KiB (3); límite de billetes falsos por IP y sin ocupar huecos de solicitud (4); billete de un uso en trámite desde que se presenta y gastado también al rechazar (5); direcciones del suplente en `bienvenida` (6); `directo` y `validar` asíncrono (7, 8, ya pedidos por Unicomp); tabla de ids rehecha desde los `orden` en el anfitrión nuevo (9); `carpeta` de sala y `destino` y `ruta` confinados a ella en el proceso (10); `bienvenida` como respuesta a cada `sincronizar` (11); `revocar` de un solo billete (12); ids recordados por miembro (13); códigos QUIC al cortar un blob (14).
+
+Descartado: consenso entre miembros o arrendamiento firmado para elegir anfitrión (es mucho código para un grupo pequeño; D-067 §12 ya lo descartó). Sus preguntas: el relé (n0 por defecto, propio opcional) y las salas partidas ya las decidió Daniel el 15-nov; subir `MaxConcurrentCalls` no hace falta con las descargas por eventos; la licencia MIT del protocolo extraído la aprobó Daniel con el repositorio (D-067 §10.1), y su autoría es solo de Daniel y Claude (`git log` de `src/Rodaje.Modules.Protocol`).
+
+## Revisión independiente de los bloques 1 y 2 (17-nov-2026)
+
+ChatGPT (`gpt-6-astra`, lectura, 23 hallazgos). Corregidos en el bloque 3 (#5, #7, #8 y #9), cada uno con su prueba de regresión: límites de profundidad con los envoltorios contados y tamaños medidos como salen (1, 14), colas y memoria acotadas con respaldo en disco (2), rol y reservas comprobados también al confirmar (3), turno único para las transiciones de autoridad (4), traspaso con confirmación explícita del sucesor (5), época de aceptación aparte de la de quien repone (6), historial del sucesor completo y continuo (7), pendientes del sucesor (8), `ConfirmarInstantaneaAsync` (9), `llenos` y reposición con contrapresión (10), mensajes del anfitrión comprobados antes de aplicar (11), `.parte` exclusivo (12), `validar` en otro hilo con contrato escrito (13), 8 MiB/s (15), cupos sin carreras (16), suplente al salir y reloj monotónico (17), dos anfitriones con desempate (18), cancelación cooperativa de blobs (19), identidad sin carreras (20), solicitudes retiradas (21), `CambiarRolAsync` y presencia guardada (22), gramática de reservas y renovación por carga (23).
+
+Decisiones de Daniel tomadas por defecto (las recomendadas): ids de deduplicación conservados con respuestas en disco y retención explícita; 120 s desde la última actividad del dueño; contrato de `validar` sin aislar en otro proceso; la app aplica la instantánea y Sala confirma época y seq; el traspaso exige confirmación del sucesor y una desconexión no cuenta como aceptación.
