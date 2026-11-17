@@ -30,7 +30,7 @@ public static class Huella
         using Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("Dathinel.Sala.palabras.txt")
             ?? throw new InvalidOperationException("Falta palabras.txt.");
         using StreamReader r = new(s);
-        string[] l = r.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        string[] l = r.ReadToEnd().Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
         return l.Length == 2048 ? l : throw new InvalidOperationException("palabras.txt tiene que traer 2048 palabras.");
     }
 }
