@@ -42,7 +42,7 @@ public sealed class ReservasBlobsTests
     [Fact]
     public async Task Una_reserva_sin_actividad_se_suelta_sola_y_mirar_no_reserva()
     {
-        await using Sala anf = await AnfitrionAsync(opciones: Opciones("Ana") with { ReservaInactiva = TimeSpan.FromSeconds(2) });
+        await using Sala anf = await AnfitrionAsync(opciones: Opciones("Ana") with { ReservaInactiva = TimeSpan.FromSeconds(4) });
         await using Sala luis = await InvitadoAsync(anf, "Luis");
         Assert.True(await luis.ReservarAsync("seccion:cad/tapa"));
         await HastaQue(() => !luis.Reservas.ContainsKey("seccion:cad/tapa"), segundos: 10, que: "caduca");
@@ -143,11 +143,12 @@ public sealed class ReservasBlobsTests
     public async Task Cada_carga_del_dueno_renueva_su_reserva_aunque_no_entre()
     {
         await using Sala anf = await AnfitrionAsync((_, _, _) => ValueTask.FromResult(Veredicto.No("no")),
-            opciones: Opciones("Ana") with { ReservaInactiva = TimeSpan.FromSeconds(2) });
+            opciones: Opciones("Ana") with { ReservaInactiva = TimeSpan.FromSeconds(4) });
         await using Sala luis = await InvitadoAsync(anf, "Luis");
         Assert.True(await luis.ReservarAsync("pista:a"));
-        // 4 s de cargas rechazadas, una cada medio segundo: antes solo renovaba una aceptada y caducaba a los 2 s.
-        for (int i = 0; i < 8; i++)
+        // 8 s de cargas rechazadas, una cada medio segundo: antes solo renovaba una aceptada y caducaba a los 4 s.
+        // Margen de 4 s entre cargas porque el corredor de Windows de la CI llega a tardar más de 1 s en una.
+        for (int i = 0; i < 16; i++)
         {
             await luis.EnviarAsync(Json($$"""{"n":{{i}}}"""));
             await Task.Delay(500);

@@ -49,7 +49,7 @@ public sealed class ConexionTests
         ConcurrentQueue<long> enAna = new();
         ana.Ordenada += o => enAna.Enqueue(o.Seq);
         await eva.EnviarAsync(Json("""{"despues":true}"""));
-        await HastaQue(() => eva.Seq == 4 && luis.Seq == 4 && ana.Seq == 4, segundos: 30, que: "seq 4 en los tres");
+        await HastaQue(() => eva.Seq == 4 && luis.Seq == 4 && ana.Seq == 4 && !enAna.IsEmpty, segundos: 30, que: "seq 4 en los tres");
         Assert.Equal([4L], enAna);
         Assert.Equal(2, eva.Epoca);
     }

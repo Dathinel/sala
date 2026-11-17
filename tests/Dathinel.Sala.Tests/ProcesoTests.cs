@@ -216,6 +216,30 @@ public sealed class ProcesoTests
         Assert.Equal("demasiado-grande", e.Codigo);
     }
 
+    /// <summary>Cada dathinel-red drena su stdout y su stderr sin ocupar el pool: antes eran dos lecturas pendientes con
+    /// Begin*ReadLine, cada una con un hilo del pool bloqueado en Windows mientras el módulo viviera; con 32 módulos son
+    /// 64 hilos retenidos y cada continuación esperaba ~1 s al hilo que inyecta el pool. Los drenajes van en hilos
+    /// propios, así que el pool se queda como al empezar. En Linux y macOS los Begin*ReadLine no bloqueaban hilos: allí
+    /// esta prueba pasa igual con el código viejo.</summary>
+    [Fact]
+    public async Task Muchos_procesos_de_red_no_dejan_sin_hilos_al_pool()
+    {
+        ProcesoRed[] extra = await Task.WhenAll(Enumerable.Range(0, 32).Select(_ => ProcesoRed.AbrirAsync(RutaRed, default)));
+        try
+        {
+            // 40 continuaciones seguidas: con el pool libre son inmediatas; en el código viejo quedaban encoladas ~1 s
+            // esperando el hilo que inyecta el pool (medido: 505–1015 ms con el viejo, 0 ms con drenaje en hilos propios).
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 40; i++) await Task.Run(() => { });
+            Assert.True(sw.ElapsedMilliseconds < 400, $"40 saltos en el pool tardaron {sw.ElapsedMilliseconds} ms con 32 módulos abiertos.");
+            Assert.True(ThreadPool.PendingWorkItemCount < 16, $"Quedan {ThreadPool.PendingWorkItemCount} tareas del pool sin hilo con 32 módulos abiertos.");
+        }
+        finally
+        {
+            foreach (ProcesoRed p in extra) await p.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task Sin_sala_abierta_las_funciones_dicen_no_abierta()
     {

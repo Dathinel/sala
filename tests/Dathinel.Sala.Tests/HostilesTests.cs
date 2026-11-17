@@ -98,7 +98,7 @@ public sealed class HostilesTests
         // 80/s en tandas de 8 cada 100 ms, mandadas a la vez: cuatro veces el ritmo de la sala (20/s) y menos que el
         // del transporte (100/s). En serie, en la CI de Windows cada llamada tardaba tanto que no se pasaba del doble.
         using PeriodicTimer reloj = new(TimeSpan.FromMilliseconds(100));
-        DateTime fin = DateTime.UtcNow.AddSeconds(10);
+        DateTime inicio = DateTime.UtcNow, fin = inicio.AddSeconds(20);
         int n = 0;
         while (DateTime.UtcNow < fin && !malo.Cerrada && await reloj.WaitForNextTickAsync())
         {
@@ -108,10 +108,11 @@ public sealed class HostilesTests
             }
             catch (SalaException) { break; }
         }
-        await HastaQue(() => malo.Cerrada, que: "expulsado");
+        await HastaQue(() => malo.Cerrada, segundos: 30, que: "expulsado");
         Assert.Contains(malo.Mensajes("rechazado"), r => r.GetProperty("motivo").GetString() == "ritmo");
-        // 40 de ráfaga y 20/s durante los ~10 s que puede tardar en expulsar.
-        Assert.True(anf.Seq is >= 40 and < 260, $"seq {anf.Seq}");
+        // 40 de ráfaga y 20/s mientras tardó en expulsar (en el corredor lento de Windows, más de 10 s).
+        double s = (DateTime.UtcNow - inicio).TotalSeconds;
+        Assert.True(anf.Seq >= 40 && anf.Seq < 40 + 20 * s + 20, $"seq {anf.Seq} en {s:F1} s");
         Assert.DoesNotContain(anf.Miembros, m => m.Alias == "Malo");
 
         // El anfitrión sigue sirviendo a otros.
