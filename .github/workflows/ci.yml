@@ -56,3 +56,14 @@ jobs:
           source build/entorno.sh
           dotnet build Sala.slnx -warnaserror
           dotnet test Sala.slnx --no-build --logger "console;verbosity=normal" --blame-hang-timeout 5m
+
+      - name: Native AOT
+        run: |
+          source build/entorno.sh
+          case "$RUNNER_OS" in
+            Windows) rid=win-x64; ext=.exe ;;
+            Linux) rid=linux-x64; ext= ;;
+            macOS) rid=osx-arm64; ext= ;;
+          esac
+          dotnet publish ejemplos/Consumidor -c Release -r "$rid" -warnaserror
+          "ejemplos/Consumidor/bin/Release/net10.0/$rid/publish/Consumidor$ext" "red/target/debug/dathinel-red$ext"

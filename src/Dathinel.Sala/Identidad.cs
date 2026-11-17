@@ -17,16 +17,16 @@ public static partial class Identidad
 
     /// <summary>
     /// Devuelve la clave de <paramref name="archivo"/>; si no existe, crea una y la guarda de forma atómica
-    /// (temporal en la misma carpeta y File.Move). Un archivo dañado, de otro usuario de Windows o con
-    /// permisos demasiado abiertos lanza <see cref="SalaException"/> con código «identidad»: no se pisa en silencio.
+    /// (temporal en la misma carpeta y File.Move sin sobrescribir). Si dos instancias la crean a la vez,
+    /// todas devuelven la que quedó guardada. Un archivo dañado, de otro usuario de Windows o con permisos
+    /// demasiado abiertos lanza <see cref="SalaException"/> con código «identidad»: no se pisa en silencio.
     /// </summary>
     public static string CargarOCrear(string archivo)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(archivo);
         if (File.Exists(archivo)) return Leer(archivo);
         string clave = Nueva();
-        Guardar(archivo, clave);
-        return clave;
+        return Guardar(archivo, clave);
     }
 
     private static string Leer(string archivo)
@@ -59,7 +59,8 @@ public static partial class Identidad
         }
     }
 
-    private static void Guardar(string archivo, string clave)
+    /// <summary>Publica <paramref name="clave"/> sin sobrescribir; si otra instancia ganó, devuelve la suya.</summary>
+    private static string Guardar(string archivo, string clave)
     {
         string completa = Path.GetFullPath(archivo);
         if (Path.GetDirectoryName(completa) is { Length: > 0 } dir) Directory.CreateDirectory(dir);
@@ -93,8 +94,23 @@ public static partial class Identidad
                 fs.Write(datos);
                 fs.Flush(flushToDisk: true);
             }
-            File.Move(tmp, completa, overwrite: true);
-            movido = true;
+            // Sin sobrescribir y atómico: MoveFileEx sin reemplazar en Windows, link(2) en Unix (en macOS File.Move
+            // sin sobrescribir comprueba y luego renombra, y dos procesos pueden pisarse).
+            if (OperatingSystem.IsWindows())
+            {
+                File.Move(tmp, completa, overwrite: false);
+                movido = true;
+            }
+            else if (Enlazar(tmp, completa) != 0)
+            {
+                throw new IOException($"No se pudo publicar la identidad (errno {Marshal.GetLastPInvokeError()}).");
+            }
+            return clave;
+        }
+        catch (IOException) when (File.Exists(completa))
+        {
+            // Otra instancia publicó primero: su clave es la que vale; el temporal se borra en el finally.
+            return Leer(completa);
         }
         finally
         {
@@ -180,6 +196,9 @@ public static partial class Identidad
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool CryptUnprotectData(IntPtr pDataIn, IntPtr ppszDataDescr, IntPtr pOptionalEntropy,
         IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, IntPtr pDataOut);
+
+    [LibraryImport("libc", EntryPoint = "link", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    private static partial int Enlazar(string existente, string nuevo);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

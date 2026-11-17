@@ -17,7 +17,8 @@ public sealed partial class Sala
     private readonly Dictionary<string, Recuerdo> _vistos = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int N, long Bytes)> _enCola = new(StringComparer.Ordinal);
     private long _colaBytes;
-    private volatile bool _traspasando;
+    /// <summary>Invitados que se saltaron un orden por cola llena: el vigía les anuncia el seq para que lo pidan.</summary>
+    private readonly HashSet<string> _atrasados = new(StringComparer.Ordinal);
 
     private async Task DeInvitadoAsync(string de, JsonElement m)
     {
@@ -29,15 +30,25 @@ public sealed partial class Sala
             case "sincronizar":
                 {
                     if (Limites.Entero(m, "epoca") is not { } suEpoca || Limites.Entero(m, "ultimoSeq") is not { } ultimo) return;
-                    if (suEpoca > Epoca)
+                    // Dos anfitriones (§5.6): manda la época mayor y, a igualdad, la clave menor.
+                    string? suAnfitrion = Limites.Texto(m, "anfitrion");
+                    if (!Limites.EsClave(suAnfitrion)) suAnfitrion = null;
+                    if (suEpoca > Epoca || (suEpoca == Epoca && suAnfitrion is not null && suAnfitrion != Clave && string.CompareOrdinal(suAnfitrion, Clave) < 0))
                     {
-                        Superada?.Invoke(suEpoca, de);
+                        Superada?.Invoke(suEpoca, suAnfitrion ?? de);
+                        // Solo la bienvenida, sin reponer: con ella el invitado ve que esta sala quedó atrás.
+                        _ = Task.Run(() => ReponerAsync(de, long.MaxValue));
                         return;
                     }
                     if (Limites.Textos(m, "direcciones", Limites.MaxDirecciones) is { } dirs)
                         lock (_cerrojo) _direccionesDe[de] = dirs;
-                    await ReponerAsync(de, ultimo).ConfigureAwait(false);
-                    await MandarPresenciasAsync(de).ConfigureAwait(false);
+                    lock (_cerrojo) _atrasados.Remove(de);
+                    // Aparte del bucle de lectura: con la cola del invitado llena, reponer espera y reintenta.
+                    _ = Task.Run(async () =>
+                    {
+                        await ReponerAsync(de, ultimo).ConfigureAwait(false);
+                        await MandarPresenciasAsync(de).ConfigureAwait(false);
+                    });
                     // Con sus direcciones ya puede ser suplente: los demás tienen que saberlo.
                     await DifundirMiembrosAsync().ConfigureAwait(false);
                     break;
@@ -90,6 +101,12 @@ public sealed partial class Sala
                 break;
             case "presencia":
                 if (m.TryGetProperty("datos", out JsonElement pd) && Limites.Objeto(pd, MaxPresencia)) await PresenciaDeAsync(de, pd).ConfigureAwait(false);
+                break;
+            case "traspaso-listo":
+                if (Limites.Entero(m, "nueva") is { } nueva && Limites.Entero(m, "seq") is { } sq) RespuestaDeSucesor(de, nueva, sq, listo: true);
+                break;
+            case "traspaso-fallo":
+                RespuestaDeSucesor(de, 0, 0, listo: false);
                 break;
         }
     }
@@ -150,8 +167,20 @@ public sealed partial class Sala
 
     private async Task OrdenarUnaAsync(string autor, Guid id, JsonElement datos, string[] reservas)
     {
-        // Durante un traspaso no se ordena nada: quien la mandó la tiene pendiente y la manda al anfitrión nuevo.
-        if (_traspasando || !EsAnfitrion) return;
+        await _mando.WaitAsync(_fin.Token).ConfigureAwait(false);
+        try
+        {
+            // Si este equipo ya no manda (traspaso), quien la mandó la tiene pendiente y la manda al anfitrión nuevo.
+            if (EsAnfitrion) await OrdenarConMandoAsync(autor, id, datos, reservas).ConfigureAwait(false);
+        }
+        finally
+        {
+            _mando.Release();
+        }
+    }
+
+    private async Task OrdenarConMandoAsync(string autor, Guid id, JsonElement datos, string[] reservas)
+    {
         long? repetida = null;
         JsonObject? rechazo = null;
         Miembro? quien;
@@ -185,9 +214,11 @@ public sealed partial class Sala
             if (no is null)
             {
                 seq = ++Seq;
-                orden = new() { ["type"] = "orden", ["epoca"] = Epoca, ["seq"] = seq, ["id"] = id.ToString(), ["autor"] = autor, ["datos"] = Nodo(datos) };
+                // «epoca» la pone al mandar la autoridad de cada momento; «aceptada» guarda la de ahora (§5.3).
+                orden = new() { ["type"] = "orden", ["epoca"] = Epoca, ["aceptada"] = Epoca, ["seq"] = seq, ["id"] = id.ToString(), ["autor"] = autor, ["datos"] = Nodo(datos) };
                 Recordar(autor).Aceptada(id, seq);
                 _historial.Agregar(seq, orden);
+                if (autor == Clave) _sinRespuesta.Remove(id);
             }
             else
             {
@@ -201,8 +232,49 @@ public sealed partial class Sala
             await ResponderRechazoAsync(autor, id, no.Motivo!, no.Detalle).ConfigureAwait(false);
             return;
         }
-        await IntentarAsync(MandarAsync((JsonObject)orden.DeepClone(), null, _fin.Token)).ConfigureAwait(false);
+        await DifundirOrdenAsync((JsonObject)orden.DeepClone()).ConfigureAwait(false);
         Ordenada?.Invoke(new Ordenado(Epoca, seq, id, autor, datos));
+    }
+
+    /// <summary>Manda el orden a todos; quien tenía la cola llena se lo salta y queda anotado para avisarle (§2, <c>llenos</c>).</summary>
+    private async Task DifundirOrdenAsync(JsonObject orden)
+    {
+        try
+        {
+            JsonElement r = await MandarAsync(orden, null, _fin.Token).ConfigureAwait(false);
+            if (Limites.Textos(r, "llenos", 64) is { Length: > 0 } llenos)
+                lock (_cerrojo) _atrasados.UnionWith(llenos);
+        }
+        catch (SalaException)
+        {
+        }
+    }
+
+    /// <summary>Vigía del anfitrión: a cada atrasado, el seq actual; al verlo, él pide lo que le falta.</summary>
+    private async Task AvisarAtrasadosAsync()
+    {
+        string[] atrasados;
+        long seq;
+        lock (_cerrojo)
+        {
+            atrasados = [.. _atrasados];
+            seq = Seq;
+        }
+        foreach (string a in atrasados)
+        {
+            try
+            {
+                await MandarAsync(new JsonObject { ["type"] = "seq", ["seq"] = seq }, a, _fin.Token).ConfigureAwait(false);
+                lock (_cerrojo) _atrasados.Remove(a);
+            }
+            catch (SalaException ex) when (ex.Codigo != "ocupado-red")
+            {
+                lock (_cerrojo) _atrasados.Remove(a); // se fue: al volver sincroniza
+            }
+            catch (SalaException)
+            {
+            }
+        }
     }
 
     /// <summary>La misma respuesta que la primera vez; si el orden ya no se guarda, <c>ya-ordenada</c> con su seq.</summary>
@@ -250,7 +322,11 @@ public sealed partial class Sala
         {
             lock (_cerrojo) Recordar(a).Rechazada(id, r);
         }
-        if (a == Clave) Rechazada?.Invoke(new Rechazo(id, motivo, detalle));
+        if (a == Clave)
+        {
+            lock (_cerrojo) _sinRespuesta.Remove(id);
+            Rechazada?.Invoke(new Rechazo(id, motivo, detalle));
+        }
         else await IntentarAsync(MandarAsync((JsonObject)r.DeepClone(), a, _fin.Token)).ConfigureAwait(false);
     }
 
@@ -267,8 +343,33 @@ public sealed partial class Sala
             PonerMiembros(bienvenida);
             if (desfasado) faltan.Add(new JsonObject { ["type"] = "desfasado", ["desde"] = masViejo });
         }
-        await MandarAsync(bienvenida, a, _fin.Token).ConfigureAwait(false);
-        foreach (JsonObject o in faltan) await MandarAsync(o, a, _fin.Token).ConfigureAwait(false);
+        try
+        {
+            await MandarEsperandoAsync(bienvenida, a).ConfigureAwait(false);
+            foreach (JsonObject o in faltan) await MandarEsperandoAsync(o, a).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SalaException or OperationCanceledException)
+        {
+            // Se fue o no hubo sitio en 30 s: al volver pedirá otra vez.
+        }
+    }
+
+    /// <summary>A un destino; con su cola llena espera y reintenta (hasta 30 s) en vez de cortar la reposición.</summary>
+    private async Task MandarEsperandoAsync(JsonObject m, string a)
+    {
+        long limite = Ahora + 30_000;
+        while (true)
+        {
+            try
+            {
+                await MandarAsync((JsonObject)m.DeepClone(), a, _fin.Token).ConfigureAwait(false);
+                return;
+            }
+            catch (SalaException ex) when (ex.Codigo == "ocupado-red" && Ahora < limite)
+            {
+                await Task.Delay(50, _fin.Token).ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>Lista de miembros y suplente (el invitado conectado más antiguo con rol editar) en <paramref name="m"/>.</summary>

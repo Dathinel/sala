@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -60,5 +61,65 @@ public sealed partial class IdentidadTests
         SalaException e = Assert.Throws<SalaException>(() => Identidad.CargarOCrear(ruta));
         Assert.Equal("identidad", e.Codigo);
         Assert.Equal(basura, File.ReadAllBytes(ruta));
+    }
+
+    [Fact]
+    public async Task Entre_16_hilos_a_la_vez_todos_ven_la_misma_clave()
+    {
+        string ruta = Archivo();
+        using Barrier barrera = new(16);
+        string[] claves = await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => Task.Run(() =>
+        {
+            barrera.SignalAndWait();
+            return Identidad.CargarOCrear(ruta);
+        })));
+
+        string guardada = Assert.Single(claves.Distinct());
+        Assert.Matches(ClaveHex(), guardada);
+        Assert.Equal(guardada, Identidad.CargarOCrear(ruta));
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(ruta)!, "*.tmp-*"));
+    }
+
+    [Fact]
+    public void Entre_4_procesos_a_la_vez_todos_ven_la_misma_clave()
+    {
+        string ruta = Archivo();
+        Process[] procesos = [.. Enumerable.Range(0, 4).Select(_ =>
+        {
+            ProcessStartInfo psi = new(Consumidor()) { RedirectStandardOutput = true, RedirectStandardError = true };
+            psi.ArgumentList.Add("identidad");
+            psi.ArgumentList.Add(ruta);
+            return Process.Start(psi)!;
+        })];
+        string[] claves = new string[4];
+        for (int i = 0; i < procesos.Length; i++)
+        {
+            claves[i] = procesos[i].StandardOutput.ReadToEnd().Trim();
+            string error = procesos[i].StandardError.ReadToEnd();
+            Assert.True(procesos[i].WaitForExit(60_000), $"El consumidor {i} no salió a tiempo.");
+            Assert.True(procesos[i].ExitCode == 0, $"El consumidor {i} salió {procesos[i].ExitCode}: {error}");
+            procesos[i].Dispose();
+        }
+
+        string guardada = Assert.Single(claves.Distinct());
+        Assert.Matches(ClaveHex(), guardada);
+        Assert.Equal(guardada, Identidad.CargarOCrear(ruta));
+    }
+
+    // El exe del ejemplo (bin/Debug o bin/Release, según lo último compilado) junto a Sala.slnx.
+    private static string Consumidor()
+    {
+        string exe = OperatingSystem.IsWindows() ? "Consumidor.exe" : "Consumidor";
+        for (DirectoryInfo? d = new(AppContext.BaseDirectory); d is not null; d = d.Parent)
+        {
+            if (!File.Exists(Path.Combine(d.FullName, "Sala.slnx"))) continue;
+            foreach (string conf in new[] { "Debug", "Release" })
+            {
+                string p = Path.Combine(d.FullName, "ejemplos", "Consumidor", "bin", conf, "net10.0", exe);
+                if (File.Exists(p)) return p;
+            }
+            throw new InvalidOperationException("No está el consumidor compilado: dotnet build ejemplos/Consumidor.");
+        }
+        throw new InvalidOperationException("No se encontró el repositorio.");
     }
 }

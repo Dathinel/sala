@@ -362,6 +362,94 @@ public sealed class HostilesTests
     }
 
     [Fact]
+    public async Task Un_invitado_que_ve_un_anfitrion_de_epoca_menor_avisa_superada()
+    {
+        string idInv = Identidad.Nueva();
+        string clavePublica;
+        await using (ProcesoRed sonda = await ProcesoRed.AbrirAsync(RutaRed, default))
+            clavePublica = (await sonda.LlamarAsync("abrir-sala", Base(idInv, Carpeta()))).GetProperty("clave").GetString()!;
+        // Un anfitrión de verdad en la época 1; el invitado ya conoce la época 3 (otro anfitrión más nuevo).
+        await using Sala viejo = await Sala.HospedarAsync(Identidad.Nueva(), Opciones("Ana"), [new Miembro(clavePublica, "Luis", Rol.Editar)], TodoVale);
+        ConcurrentQueue<long> superada = new();
+        SalaException e = await Assert.ThrowsAsync<SalaException>(() => Sala.UnirseAsync(idInv, Opciones("Luis"), anfitrion: viejo.Clave,
+            direcciones: viejo.Direcciones, epoca: 3, suscribir: s => s.Superada += (ep, _) => superada.Enqueue(ep)));
+        Assert.Equal("superada", e.Codigo);
+        Assert.Equal([3L], superada);
+    }
+
+    [Fact]
+    public async Task Un_anfitrion_que_recibe_una_epoca_mayor_o_la_misma_con_clave_menor_avisa_superada()
+    {
+        await using Sala anf = await AnfitrionAsync();
+        ConcurrentQueue<(long, string)> superada = new();
+        anf.Superada += (ep, quien) => superada.Enqueue((ep, quien));
+        await using Crudo malo = await Crudo.EntrarAsync(anf);
+        string menor = new('0', 64), mayor = new('f', 64);
+        await malo.MandarAsync(new JsonObject { ["type"] = "sincronizar", ["epoca"] = 1, ["ultimoSeq"] = 0, ["anfitrion"] = mayor });
+        await malo.MandarAsync(new JsonObject { ["type"] = "sincronizar", ["epoca"] = 1, ["ultimoSeq"] = 0, ["anfitrion"] = menor });
+        await malo.MandarAsync(new JsonObject { ["type"] = "sincronizar", ["epoca"] = 2, ["ultimoSeq"] = 0, ["anfitrion"] = mayor });
+        await HastaQue(() => superada.Count == 2, que: "dos superadas");
+        Assert.Equal([(1L, menor), (2L, mayor)], superada);
+        Assert.True(anf.EsAnfitrion);
+    }
+
+    [Fact]
+    public async Task Al_anunciar_un_seq_que_no_tiene_el_invitado_pide_lo_que_le_falta()
+    {
+        int sincronizar = 0;
+        var (inv, hostil, fin) = await AnfitrionHostilAsync(async (clave, M) =>
+        {
+            if (Interlocked.Increment(ref sincronizar) > 1) return;
+            await M(Bienvenida(1, clave));
+            // Como si el anfitrión se hubiera saltado el orden 1 por cola llena: solo anuncia el seq.
+            await M(new JsonObject { ["type"] = "seq", ["epoca"] = 1, ["seq"] = 1 });
+        });
+        await using Sala _i = inv;
+        await using ProcesoRed _h = hostil;
+        using CancellationTokenSource _f = fin;
+        await HastaQue(() => Volatile.Read(ref sincronizar) >= 2, que: "vuelve a sincronizar");
+        await fin.CancelAsync();
+    }
+
+    [Fact]
+    public async Task El_marco_mas_hondo_que_admite_la_red_llega_a_la_app_sin_romper_la_tuberia()
+    {
+        await using Sala anf = await AnfitrionAsync();
+        await using Crudo malo = await Crudo.EntrarAsync(anf);
+        // Carga de 27 niveles dentro del marco: 28, el máximo entre pares; con los 4 envoltorios locales, 32.
+        string honda = "{\"a\":" + new string('[', 26) + new string(']', 26) + "}";
+        JsonObject c = Carga(Guid.NewGuid(), 0);
+        c["datos"] = JsonNode.Parse(honda);
+        await malo.MandarAsync(c);
+        await HastaQue(() => anf.Seq == 1, que: "entra");
+        // Uno más ya no sale de su proceso: antes llegaba al anfitrión y le rompía la tubería local.
+        JsonObject d = Carga(Guid.NewGuid(), 0);
+        d["datos"] = JsonNode.Parse("{\"a\":" + new string('[', 27) + new string(']', 27) + "}");
+        SalaException e = await Assert.ThrowsAsync<SalaException>(() => malo.MandarAsync(d));
+        Assert.Equal("invalid-parameters", e.Codigo);
+        await malo.MandarAsync(Carga(Guid.NewGuid(), 1));
+        await HastaQue(() => anf.Seq == 2, que: "la sala sigue");
+    }
+
+    [Fact]
+    public async Task Quien_se_va_esperando_aprobacion_retira_su_solicitud()
+    {
+        await using Sala anf = await Sala.HospedarAsync(Identidad.Nueva(), Opciones("Ana"), [], TodoVale);
+        TaskCompletionSource<string> pide = new(), retira = new();
+        anf.SolicitudRecibida += s => pide.TrySetResult(s.Clave);
+        anf.SolicitudRetirada += c => retira.TrySetResult(c);
+        using CancellationTokenSource corta = new();
+        Task entra = Sala.UnirseAsync(Identidad.Nueva(), Opciones("Luis"), await anf.NuevoBilleteAsync(TimeSpan.FromMinutes(10)), ct: corta.Token);
+        string clave = await pide.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        await corta.CancelAsync();
+        await Assert.ThrowsAnyAsync<Exception>(() => entra);
+        Assert.Equal(clave, await retira.Task.WaitAsync(TimeSpan.FromSeconds(20)));
+        // Ya no está esperando: aceptarla ahora no la deja entrar.
+        SalaException e = await Assert.ThrowsAsync<SalaException>(() => anf.AceptarAsync(clave, Rol.Editar));
+        Assert.Equal("desconocido", e.Codigo);
+    }
+
+    [Fact]
     public void La_cuota_deja_pasar_el_ritmo_rechaza_el_exceso_y_expulsa_si_sigue()
     {
         Sala.Cuota c = new();
