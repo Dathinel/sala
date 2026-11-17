@@ -242,7 +242,7 @@ Para lo que no cabe en un marco: el proyecto inicial, parches grandes, proxies, 
 2. Quien lo necesita lo pide (`PedirBlobAsync(de, huella, tamano, destino, tope, ct)`); el destino lo elige la app dentro de su carpeta de sala. Un `tamano` mayor que `tope` se rechaza antes de abrir el stream.
 3. `dathinel-red` lo baja por un stream propio a un temporal exclusivo, comprueba tamaño y SHA-256 y renombra; la app vuelve a comprobarlo antes de abrirlo con su lector normal.
 
-Cada descarga es un `intento`: un final tardío nunca completa otra descarga de la misma huella. Cancelar el `ct` espera a que el proceso borre el temporal; cerrar la sala termina la espera con `SalaException` `cerrada`. Un par solo puede bajar lo que el otro ofreció. El tamaño máximo lo pone quien pide (Rodaje 64 MiB para el proyecto; Unicomp 500 MB el proyecto y 100 MB una malla).
+Cada descarga es un `intento`: un final tardío nunca completa otra descarga de la misma huella. Cancelar el `ct` espera, hasta 10 s, a que el proceso borre el temporal y después relanza la cancelación; cerrar la sala termina la espera con `SalaException` `cerrada`. Un par solo puede bajar lo que el otro ofreció. El tamaño máximo lo pone quien pide (Rodaje 64 MiB para el proyecto; Unicomp 500 MB el proyecto y 100 MB una malla).
 
 ### 5.8 Límites de la sala
 
