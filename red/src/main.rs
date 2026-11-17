@@ -6,9 +6,9 @@ mod hex;
 mod limites;
 mod marco;
 mod modulo;
-mod sala;
 #[cfg(test)]
 mod pruebas;
+mod sala;
 
 use std::time::Duration;
 

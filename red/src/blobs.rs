@@ -83,14 +83,13 @@ impl Blobs {
                 "No hay cupo o el destino ya está en uso.".into(),
             ));
         }
-        let intento = INTENTO
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-            .map_err(|_| {
-                Fallo(
-                    "ocupado",
-                    "Se agotaron los identificadores de intento.".into(),
-                )
-            })?;
+        let intento = INTENTO.fetch_add(1, Ordering::Relaxed);
+        if intento == 0 {
+            return Err(Fallo(
+                "ocupado",
+                "Se agotaron los identificadores de intento.".into(),
+            ));
+        }
         let cancelar = Arc::new(Cancelacion::default());
         let fin = Arc::new(Notify::new());
         self.descargas.insert(
@@ -490,7 +489,10 @@ mod pruebas {
         let b = dentro(&carpeta.0, &carpeta.0.join("sub/../dato"), false).unwrap();
         let mut blobs = Blobs::default();
         let (intento, _, _) = blobs.reservar_descarga(clave(1), a.clone()).unwrap();
-        assert_eq!(blobs.reservar_descarga(clave(2), b).err().unwrap().0, "ocupado");
+        assert_eq!(
+            blobs.reservar_descarga(clave(2), b).err().unwrap().0,
+            "ocupado"
+        );
         blobs.descargas.remove(&intento);
         let (siguiente, _, _) = blobs.reservar_descarga(clave(2), a).unwrap();
         assert!(siguiente > intento);
@@ -501,17 +503,44 @@ mod pruebas {
         let mut blobs = Blobs::default();
         for par in 0..4 {
             for n in 0..POR_PAR {
-                blobs.reservar_descarga(clave(par), PathBuf::from(format!("{par}-{n}"))).unwrap();
+                blobs
+                    .reservar_descarga(clave(par), PathBuf::from(format!("{par}-{n}")))
+                    .unwrap();
             }
-            assert_eq!(blobs.reservar_descarga(clave(par), PathBuf::from("extra")).err().unwrap().0, "ocupado");
+            assert_eq!(
+                blobs
+                    .reservar_descarga(clave(par), PathBuf::from("extra"))
+                    .err()
+                    .unwrap()
+                    .0,
+                "ocupado"
+            );
         }
         assert_eq!(blobs.descargas.len(), TOTAL);
-        assert_eq!(blobs.reservar_descarga(clave(5), PathBuf::from("extra")).err().unwrap().0, "ocupado");
+        assert_eq!(
+            blobs
+                .reservar_descarga(clave(5), PathBuf::from("extra"))
+                .err()
+                .unwrap()
+                .0,
+            "ocupado"
+        );
         let intento = *blobs.descargas.keys().next().unwrap();
         blobs.descargas.remove(&intento);
-        assert!(blobs.reservar_descarga(clave(5), PathBuf::from("extra")).is_ok());
+        assert!(
+            blobs
+                .reservar_descarga(clave(5), PathBuf::from("extra"))
+                .is_ok()
+        );
         blobs.cerrando = true;
-        assert_eq!(blobs.reservar_descarga(clave(6), PathBuf::from("otro")).err().unwrap().0, "ocupado");
+        assert_eq!(
+            blobs
+                .reservar_descarga(clave(6), PathBuf::from("otro"))
+                .err()
+                .unwrap()
+                .0,
+            "ocupado"
+        );
     }
 
     #[test]
@@ -519,7 +548,9 @@ mod pruebas {
         let blobs = Blobs::default();
         let mut reservas = Vec::new();
         for par in 0..4 {
-            for _ in 0..POR_PAR { reservas.push(blobs.reservar_servicio(clave(par)).unwrap()); }
+            for _ in 0..POR_PAR {
+                reservas.push(blobs.reservar_servicio(clave(par)).unwrap());
+            }
             assert!(blobs.reservar_servicio(clave(par)).is_none());
         }
         assert!(blobs.reservar_servicio(clave(5)).is_none());
@@ -550,7 +581,10 @@ mod pruebas {
         escritor.write_all(b"dato").await.unwrap();
         let r = cancelar_o(&cancelar, operacion).await;
         assert_eq!(r, Err("cancelado"));
-        assert_eq!(terminar_archivo(f, &carpeta.0, &parte, &destino, r, &cancelar).await, Err("cancelado"));
+        assert_eq!(
+            terminar_archivo(f, &carpeta.0, &parte, &destino, r, &cancelar).await,
+            Err("cancelado")
+        );
         assert!(!parte.exists());
         assert_eq!(std::fs::read(&destino).unwrap(), b"anterior");
     }
@@ -563,8 +597,14 @@ mod pruebas {
         let f = abrir_parte(&carpeta.0, &parte).unwrap();
         let cancelar = Cancelacion::default();
         cancelar.pedir();
-        assert_eq!(cancelar_o(&cancelar, std::future::pending()).await, Err("cancelado"));
-        assert_eq!(terminar_archivo(f, &carpeta.0, &parte, &destino, Ok(()), &cancelar).await, Err("cancelado"));
+        assert_eq!(
+            cancelar_o(&cancelar, std::future::pending()).await,
+            Err("cancelado")
+        );
+        assert_eq!(
+            terminar_archivo(f, &carpeta.0, &parte, &destino, Ok(()), &cancelar).await,
+            Err("cancelado")
+        );
         assert!(!parte.exists());
         assert!(!destino.exists());
     }
@@ -576,7 +616,11 @@ mod pruebas {
         let parte = nombre_parte(&destino);
         assert_ne!(parte, nombre_parte(&destino));
         let nombre = parte.file_name().unwrap().to_str().unwrap();
-        let azar = nombre.strip_prefix("dato.bin.").unwrap().strip_suffix(".parte").unwrap();
+        let azar = nombre
+            .strip_prefix("dato.bin.")
+            .unwrap()
+            .strip_suffix(".parte")
+            .unwrap();
         assert_eq!(azar.len(), 16);
         assert!(azar.bytes().all(|c| c.is_ascii_hexdigit()));
         std::fs::write(&parte, b"intacto").unwrap();
@@ -601,7 +645,16 @@ mod pruebas {
         symlink(&externo, &destino).unwrap();
         let mut f = abrir_parte(&sala.0, &parte).unwrap();
         f.write_all(b"nuevo").await.unwrap();
-        terminar_archivo(f, &sala.0, &parte, &destino, Ok(()), &Cancelacion::default()).await.unwrap();
+        terminar_archivo(
+            f,
+            &sala.0,
+            &parte,
+            &destino,
+            Ok(()),
+            &Cancelacion::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&externo).unwrap(), b"intacto");
         assert_eq!(std::fs::read(&destino).unwrap(), b"nuevo");
     }
@@ -621,7 +674,18 @@ mod pruebas {
         f.write_all(b"nuevo").await.unwrap();
         std::fs::remove_dir(&padre).unwrap();
         symlink(&fuera.0, &padre).unwrap();
-        assert_eq!(terminar_archivo(f, &sala.0, &parte, &destino, Ok(()), &Cancelacion::default()).await, Err("disco"));
+        assert_eq!(
+            terminar_archivo(
+                f,
+                &sala.0,
+                &parte,
+                &destino,
+                Ok(()),
+                &Cancelacion::default()
+            )
+            .await,
+            Err("disco")
+        );
         assert!(!parte.exists());
         assert!(!fuera.0.join("dato").exists());
         // También rechaza y borra un temporal creado por un padre ya sustituido.

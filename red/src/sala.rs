@@ -1126,3 +1126,102 @@ impl Estado {
         Some(retirada(quien, motivo))
     }
 }
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    fn clave(n: u8) -> EndpointId {
+        iroh::SecretKey::from_bytes(&[n; 32]).public()
+    }
+
+    fn estado_con_billete(un_uso: bool) -> (Estado, String) {
+        let id = "0123456789abcdef".to_string();
+        let mut e = Estado::default();
+        e.billetes.insert(
+            id.clone(),
+            BilleteVivo {
+                secreto: [9u8; 32],
+                caduca: ahora() + 60,
+                un_uso,
+                uso: Uso::Libre,
+            },
+        );
+        (e, id)
+    }
+
+    fn hola(id: &str, secreto: u8) -> Value {
+        json!({"type":"hola","billete":id,"secreto":hex::codificar(&[secreto; 32])})
+    }
+
+    #[test]
+    fn solicitar_comprueba_y_ocupa_el_hueco_en_un_paso() {
+        let (mut e, id) = estado_con_billete(false);
+        // Un billete inválido no ocupa solicitud pendiente ni la marca en trámite.
+        assert!(matches!(
+            e.solicitar(&hola(&id, 8), clave(1)),
+            Err("billete-invalido")
+        ));
+        assert!(e.pendientes.is_empty());
+        // Cuatro pendientes como mucho: el quinto y un repetido salen con «ocupado».
+        for n in 0..MAX_PENDIENTES {
+            assert!(e.solicitar(&hola(&id, 9), clave(n as u8 + 1)).is_ok());
+        }
+        assert!(matches!(
+            e.solicitar(&hola(&id, 9), clave(9)),
+            Err("ocupado")
+        ));
+        assert!(matches!(
+            e.solicitar(&hola(&id, 9), clave(1)),
+            Err("ocupado")
+        ));
+        // Al retirar una queda el hueco libre para otra.
+        e.retirar(clave(1), "se-fue");
+        assert!(e.solicitar(&hola(&id, 9), clave(9)).is_ok());
+    }
+
+    #[test]
+    fn billete_de_un_uso_en_tramite_no_se_reusa() {
+        let (mut e, id) = estado_con_billete(true);
+        assert!(e.solicitar(&hola(&id, 9), clave(1)).is_ok());
+        assert!(e.billetes[&id].uso == Uso::EnTramite);
+        assert!(matches!(
+            e.solicitar(&hola(&id, 9), clave(2)),
+            Err("billete-invalido")
+        ));
+        e.terminar_billete(&id, true);
+        assert!(e.billetes[&id].uso == Uso::Gastado);
+        assert!(matches!(
+            e.solicitar(&hola(&id, 9), clave(3)),
+            Err("billete-invalido")
+        ));
+    }
+
+    #[test]
+    fn retirar_emite_solicitud_retirada_y_libera_billete() {
+        let (mut e, id) = estado_con_billete(true);
+        let quien = clave(3);
+        for motivo in ["se-fue", "tiempo", "revocado"] {
+            e.solicitar(&hola(&id, 9), quien).unwrap();
+            let ev = e.retirar(quien, motivo).unwrap();
+            assert_eq!(
+                ev,
+                json!({"tipo":"solicitud-retirada","clave":hex::de_clave(&quien),"motivo":motivo})
+            );
+            assert!(e.billetes[&id].uso == Uso::Libre);
+            assert!(e.pendientes.is_empty());
+        }
+        // Lo que ya no está pendiente no emite nada (aceptar, rechazar o revocar ganó la carrera).
+        assert!(e.retirar(quien, "tiempo").is_none());
+    }
+
+    #[tokio::test]
+    async fn retirar_cierra_la_decision_como_se_fue() {
+        let (mut e, id) = estado_con_billete(true);
+        let quien = clave(4);
+        let (_, rx) = e.solicitar(&hola(&id, 9), quien).unwrap();
+        assert!(e.retirar(quien, "se-fue").is_some());
+        // Al quitar la solicitud se suelta el emisor: quien espera se entera del cierre.
+        assert!(rx.await.is_err());
+    }
+}
