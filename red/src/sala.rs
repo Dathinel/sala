@@ -569,7 +569,14 @@ impl Sala {
 
     /// Cierra todas las conexiones sin avisar a la app (ella pidió el cambio) con `codigo` para el otro lado.
     fn callar_pares(&self, codigo: u32) {
-        let viejos: Vec<Par> = self.estado.lock().unwrap().pares.drain().map(|(_, par)| par).collect();
+        let viejos: Vec<Par> = self
+            .estado
+            .lock()
+            .unwrap()
+            .pares
+            .drain()
+            .map(|(_, par)| par)
+            .collect();
         for par in viejos {
             par.callada.store(true, Ordering::SeqCst);
             par.conn.close(VarInt::from_u32(codigo), b"");
