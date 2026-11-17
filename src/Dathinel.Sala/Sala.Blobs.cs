@@ -44,7 +44,7 @@ public sealed partial class Sala
             }
             catch (OperationCanceledException)
             {
-                await IntentarAsync(_red.LlamarAsync("blob-cancelar", new JsonObject { ["huella"] = huella })).ConfigureAwait(false);
+                await IntentarAsync(_red.LlamarAsync("blob-cancelar", new JsonObject { ["huella"] = huella }, CancellationToken.None)).ConfigureAwait(false);
                 throw;
             }
             if (error is not null) throw new SalaException(error, $"No se pudo bajar el blob: {error}.");

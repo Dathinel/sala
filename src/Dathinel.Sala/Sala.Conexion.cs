@@ -51,7 +51,7 @@ public sealed partial class Sala
         Clave = e.GetProperty("clave").GetString()!;
     }
 
-    private Task SincronizarAsync(CancellationToken ct) => MandarAsync(new JsonObject
+    private Task<JsonElement> SincronizarAsync(CancellationToken ct) => MandarAsync(new JsonObject
     {
         ["type"] = "sincronizar",
         ["epoca"] = Epoca,
@@ -316,7 +316,7 @@ public sealed partial class Sala
         _reconectando = false;
         _conectado = true;
         EsAnfitrion = true;
-        _orden = Task.Run(OrdenarAsync);
+        _orden = Task.Run(OrdenarAsync, CancellationToken.None);
     }
 
     /// <summary>Para las pruebas: mata el proceso de red como si se hubiera caído.</summary>

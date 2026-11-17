@@ -232,13 +232,14 @@ public sealed partial class Sala
     /// <summary>Cubo de fichas (20/s y ráfaga de 40 para cargas); rechazos por 3 s al doble del ritmo: expulsión.</summary>
     internal sealed class Cuota(double medio = RitmoMedio, double rafaga = RitmoRafaga)
     {
+        private readonly double _rafaga = rafaga;
         private double _fichas = rafaga;
         private DateTime _ultimo = DateTime.MinValue;
         private readonly Queue<DateTime> _rechazos = new();
 
         public Paso Tomar(DateTime ahora)
         {
-            if (_ultimo != DateTime.MinValue) _fichas = Math.Min(rafaga, _fichas + (ahora - _ultimo).TotalSeconds * medio);
+            if (_ultimo != DateTime.MinValue) _fichas = Math.Min(_rafaga, _fichas + (ahora - _ultimo).TotalSeconds * medio);
             _ultimo = ahora;
             if (_fichas >= 1)
             {
