@@ -61,7 +61,9 @@ public sealed partial class Sala
                             await ExpulsarAsync(de).ConfigureAwait(false);
                             return;
                         case Paso.Ritmo:
-                            await ResponderRechazoAsync(de, id, "ritmo", "Demasiadas cargas por segundo.").ConfigureAwait(false);
+                            // Sin esperar la respuesta: con un par que inunda, el bucle de lectura tiene que ir más
+                            // rápido que él, o el ritmo medido sería el nuestro y no el suyo.
+                            _ = ResponderRechazoAsync(de, id, "ritmo", "Demasiadas cargas por segundo.");
                             return;
                     }
                     await _porOrdenar.Writer.WriteAsync((autor, id, datos.Clone(), reservas)).ConfigureAwait(false);
