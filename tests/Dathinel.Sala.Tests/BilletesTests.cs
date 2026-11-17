@@ -90,7 +90,8 @@ public sealed class BilletesTests
             await HastaQue(() => eventos.Count(e => e.GetProperty("tipo").GetString() == "solicitud") == 4, que: "cuatro solicitudes");
             ProcesoRed quinto = await ProcesoRed.AbrirAsync(RutaRed, default);
             invitados.Add(quinto);
-            SalaException e = await Assert.ThrowsAsync<SalaException>(() => quinto.LlamarAsync("unirse", Unirse(BilleteAsync(anf).Result)));
+            string billete = await BilleteAsync(anf);
+            SalaException e = await Assert.ThrowsAsync<SalaException>(() => quinto.LlamarAsync("unirse", Unirse(billete)));
             Assert.Equal("ocupado", e.Codigo);
             await Task.Delay(300);
             Assert.Equal(4, eventos.Count(ev => ev.GetProperty("tipo").GetString() == "solicitud"));

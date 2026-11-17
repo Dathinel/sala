@@ -165,12 +165,12 @@ public sealed partial class Sala
     public async Task TraspasarAsync(string clave, CancellationToken ct = default)
     {
         if (!EsAnfitrion) throw new SalaException("invalid-parameters", "Solo el anfitrión traspasa la sala.");
-        string[] dirs;
+        string[]? dirs;
         JsonArray historial;
         long seq;
         lock (_cerrojo)
         {
-            if (!_conectados.Contains(clave) || !_miembros.TryGetValue(clave, out Miembro? m) || m.Rol != Rol.Editar || !_direccionesDe.TryGetValue(clave, out dirs!))
+            if (!_conectados.Contains(clave) || !_miembros.TryGetValue(clave, out Miembro? m) || m.Rol != Rol.Editar || !_direccionesDe.TryGetValue(clave, out dirs))
                 throw new SalaException("desconocido", "Ese miembro no está conectado o no puede editar.");
             _traspasando = true;
             historial = [.. _historial.Select(o => o.DeepClone())];
@@ -270,7 +270,7 @@ public sealed partial class Sala
             if (seq != Seq + 1) continue;
             Seq = seq;
             lock (_cerrojo) _historial.AddLast(o);
-            Ordenada?.Invoke(new Ordenado(o["epoca"]!.GetValue<long>(), seq, Guid.Parse(o["id"]!.GetValue<string>()), o["autor"]!.GetValue<string>(), JsonSerializer.SerializeToElement(o["datos"], SalaJson.Default.JsonNode)));
+            Ordenada?.Invoke(new Ordenado(o["epoca"]!.GetValue<long>(), seq, Guid.Parse(o["id"]!.GetValue<string>()), o["autor"]!.GetValue<string>(), JsonSerializer.SerializeToElement(o["datos"]!, SalaJson.Default.JsonNode)));
         }
         await AscenderAsync(epoca).ConfigureAwait(false);
     }

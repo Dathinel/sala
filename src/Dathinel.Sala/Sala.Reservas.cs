@@ -47,8 +47,8 @@ public sealed partial class Sala
         TaskCompletionSource<string?> tcs;
         lock (_cerrojo)
         {
-            if (!_esperandoReserva.TryGetValue(clave, out tcs!))
-                _esperandoReserva[clave] = tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (_esperandoReserva.TryGetValue(clave, out TaskCompletionSource<string?>? existente)) tcs = existente;
+            else _esperandoReserva[clave] = tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
         await MandarAsync(new JsonObject { ["type"] = "reservar", ["clave"] = clave }, null, ct).ConfigureAwait(false);
         try

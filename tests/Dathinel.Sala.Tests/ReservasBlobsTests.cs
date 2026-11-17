@@ -46,7 +46,7 @@ public sealed class ReservasBlobsTests
         await using Sala luis = await InvitadoAsync(anf, "Luis");
         Assert.True(await luis.ReservarAsync("seccion:cad/tapa"));
         await HastaQue(() => !luis.Reservas.ContainsKey("seccion:cad/tapa"), segundos: 10, que: "caduca");
-        Assert.Throws<ArgumentException>(() => luis.ReservarAsync("../fuera").GetAwaiter().GetResult());
+        await Assert.ThrowsAsync<ArgumentException>(() => luis.ReservarAsync("../fuera"));
         Assert.False(Sala.ClaveDeReservaValida("C:\\x"));
         Assert.False(Sala.ClaveDeReservaValida("/abs"));
         Assert.True(Sala.ClaveDeReservaValida("codigo:3f2a/src/main.cpp"));
