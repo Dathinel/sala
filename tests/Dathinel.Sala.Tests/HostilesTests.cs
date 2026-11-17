@@ -330,11 +330,11 @@ public sealed class HostilesTests
     [Fact]
     public async Task El_tamano_se_mide_como_sale_por_la_tuberia_y_no_como_llega()
     {
-        // 400 000 «é» son 800 KB en UTF-8 pero 2,4 MB escapados: no caben en el orden que el anfitrión reparte.
+        // 160 000 «é» son 320 KB en UTF-8 pero 960 KB escapados, como salen por la tubería: pasa de 900 KiB.
         await using Sala anf = await AnfitrionAsync();
         await using Crudo malo = await Crudo.EntrarAsync(anf);
         JsonObject c = Carga(Guid.NewGuid(), 0);
-        c["datos"] = new JsonObject { ["x"] = new string('é', 400_000) };
+        c["datos"] = new JsonObject { ["x"] = new string('é', 160_000) };
         await malo.MandarAsync(c);
         await HastaQue(() => malo.Mensajes("rechazado").Any(), que: "rechazo");
         Assert.Equal("grande", malo.Mensajes("rechazado").Single().GetProperty("motivo").GetString());
