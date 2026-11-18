@@ -508,7 +508,9 @@ public sealed class ModuleHost(ModuleInfo info, int minProtocol = ProtocolVersio
     /// llama a <c>RunBlockingAsync</c> y la corre el hilo que arranca el trabajo, así cada prueba ve solo sus arranques.
     /// </summary>
     [ThreadStatic]
-    internal static Action? BeforeBlockingThreadStartsForTests = null;
+#pragma warning disable CS0649 // Solo lo asignan las pruebas; consumidores que enlazan los fuentes (Unicomp) verían el aviso.
+    internal static Action? BeforeBlockingThreadStartsForTests;
+#pragma warning restore CS0649
 
     /// <summary>
     /// Arranca los hilos de <see cref="RunBlockingAsync(Action, CancellationToken)"/> pedidos desde el pool, de uno en uno,
