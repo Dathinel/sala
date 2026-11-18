@@ -508,7 +508,7 @@ public sealed class ModuleHost(ModuleInfo info, int minProtocol = ProtocolVersio
     /// llama a <c>RunBlockingAsync</c> y la corre el hilo que arranca el trabajo, así cada prueba ve solo sus arranques.
     /// </summary>
     [ThreadStatic]
-    internal static Action? BeforeBlockingThreadStartsForTests;
+    internal static Action? BeforeBlockingThreadStartsForTests = null;
 
     /// <summary>
     /// Arranca los hilos de <see cref="RunBlockingAsync(Action, CancellationToken)"/> pedidos desde el pool, de uno en uno,
