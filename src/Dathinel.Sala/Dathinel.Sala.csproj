@@ -4,6 +4,9 @@
   <PropertyGroup>
     <RootNamespace>Dathinel.Sala</RootNamespace>
     <IsAotCompatible>true</IsAotCompatible>
+    <!-- Como Rodaje.Modules.Protocol: el mismo RID con y sin «-r win-x64», para que el lockfile no gane o pierda «net10.0/win-x64»
+         según quién lo restaure (Rodaje lo restaura con y sin RID en su CI: NU1004 en modo bloqueado). -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <!-- Identidad.cs llama a DPAPI con LibraryImport, cuyo código generado necesita unsafe. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
