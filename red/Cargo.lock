@@ -697,6 +697,7 @@ dependencies = [
  "base64 0.22.1",
  "iroh",
  "iroh-mdns-address-lookup",
+ "iroh-relay",
  "n0-future",
  "rand 0.9.5",
  "serde",

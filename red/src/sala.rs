@@ -129,6 +129,8 @@ pub struct Sala {
     app: String,
     app_version: String,
     rele: Option<String>,
+    #[cfg(feature = "prueba")]
+    rele_inseguro: bool,
     solo_rele: bool,
     mdns: bool,
     pub(crate) carpeta: PathBuf,
@@ -294,6 +296,13 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
                 .map_err(|_| Fallo("invalid-parameters", "URL de relé inválida.".into()))?;
             Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Custom(u.into()))
         }
+        #[cfg(feature = "prueba")]
+        url if inseguro && url.starts_with("http://") => {
+            let u: RelayUrl = url
+                .parse()
+                .map_err(|_| Fallo("invalid-parameters", "URL de relé inválida.".into()))?;
+            Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Custom(u.into()))
+        }
         _ => {
             return fallo(
                 "invalid-parameters",
@@ -303,7 +312,7 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
     };
     #[cfg(feature = "prueba")]
     if inseguro {
-        if !rele.starts_with("https://") {
+        if !rele.starts_with("https://") && !rele.starts_with("http://") {
             return fallo(
                 "invalid-parameters",
                 "«releInseguro» necesita la URL https del relé de pruebas.",
@@ -343,6 +352,8 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         app,
         app_version,
         rele: (rele != "ninguno").then_some(rele.clone()),
+        #[cfg(feature = "prueba")]
+        rele_inseguro: inseguro,
         solo_rele,
         mdns,
         carpeta,
@@ -954,6 +965,8 @@ impl Sala {
                 ))?,
                 b.rele.as_deref(),
                 &b.direcciones,
+                #[cfg(feature = "prueba")]
+                self.rele_inseguro,
             )?;
             (addr, Some(b.id), Some(b.secreto))
         } else {
@@ -968,7 +981,13 @@ impl Sala {
                 })
                 .unwrap_or_default();
             (
-                direccion(k, marco::texto(p, "rele").or(self.rele.as_deref()), &dirs)?,
+                direccion(
+                    k,
+                    marco::texto(p, "rele").or(self.rele.as_deref()),
+                    &dirs,
+                    #[cfg(feature = "prueba")]
+                    self.rele_inseguro,
+                )?,
                 None,
                 None,
             )
@@ -1234,8 +1253,29 @@ async fn despedir(conn: Connection, envio: &mut SendStream, adios: &Value) {
     conn.close(VarInt::from_u32(cierre::SALUDO), b"adios");
 }
 
-fn direccion(id: EndpointId, rele: Option<&str>, dirs: &[String]) -> Result<EndpointAddr, Fallo> {
+fn direccion(
+    id: EndpointId,
+    rele: Option<&str>,
+    dirs: &[String],
+    #[cfg(feature = "prueba")] inseguro: bool,
+) -> Result<EndpointAddr, Fallo> {
     let mut a = EndpointAddr::new(id);
+    #[cfg(feature = "prueba")]
+    let rele = if let Some(r) = rele.filter(|r| r.starts_with("http://")) {
+        if !inseguro {
+            return fallo(
+                "invalid-parameters",
+                "«rele» tiene que ser n0, ninguno o una URL https.",
+            );
+        }
+        a = a.with_relay_url(
+            r.parse()
+                .map_err(|_| Fallo("billete-invalido", "Relé inválido.".into()))?,
+        );
+        None
+    } else {
+        rele
+    };
     if let Some(r) = rele.filter(|r| r.starts_with("https://")) {
         a = a.with_relay_url(
             r.parse()
@@ -1464,6 +1504,51 @@ mod pruebas {
 
     fn clave(n: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[n; 32]).public()
+    }
+
+    #[cfg(feature = "prueba")]
+    #[tokio::test]
+    async fn http_sin_rele_inseguro_conserva_el_error() {
+        let error = abrir_una(
+            json!({
+                "identidad":hex::codificar(&[7; 32]),
+                "app":"prueba",
+                "appVersion":"1",
+                "carpeta":std::env::current_dir().expect("carpeta de pruebas"),
+                "red":{"rele":"http://127.0.0.1:12345"}
+            }),
+            true,
+            Arc::new(Notify::new()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.0, "invalid-parameters");
+        assert_eq!(error.1, "«rele» tiene que ser n0, ninguno o una URL https.");
+    }
+
+    #[cfg(feature = "prueba")]
+    #[test]
+    fn billete_http_necesita_rele_inseguro_en_el_invitado() {
+        let b = Billete {
+            app: "prueba".into(),
+            anfitrion: hex::de_clave(&clave(7)),
+            rele: Some("http://127.0.0.1:12345".into()),
+            direcciones: Vec::new(),
+            id: "0123456789abcdef".into(),
+            secreto: hex::codificar(&[9; 32]),
+            caduca: u64::MAX,
+        };
+        let b = Billete::decodificar(&b.codificar()).expect("billete HTTP");
+        let id = hex::clave(&b.anfitrion).expect("clave anfitrión");
+        let direccion_http = direccion(id, b.rele.as_deref(), &b.direcciones, true)
+            .expect("dirección de prueba");
+        assert_eq!(
+            direccion_http.relay_urls().next().map(|u| u.scheme()),
+            Some("http")
+        );
+        let error = direccion(id, b.rele.as_deref(), &b.direcciones, false).unwrap_err();
+        assert_eq!(error.0, "invalid-parameters");
+        assert_eq!(error.1, "«rele» tiene que ser n0, ninguno o una URL https.");
     }
 
     fn estado_con_billete(un_uso: bool) -> (Estado, String) {

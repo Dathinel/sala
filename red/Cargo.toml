@@ -9,10 +9,11 @@ publish = false
 
 [features]
 default = []
-prueba = ["iroh/test-utils"]
+prueba = ["iroh/test-utils", "dep:iroh-relay"]
 
 [dependencies]
 iroh = { version = "=1.4.1", default-features = false, features = ["portmapper", "tls-ring", "fast-apple-datapath"] }
+iroh-relay = { version = "=1.4.1", default-features = false, features = ["server"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs", "io-std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
