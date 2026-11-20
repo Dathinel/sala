@@ -836,9 +836,9 @@ impl Sala {
                 "version",
                 format!("Esta sala es de {}.", version::nombre(&self.app)),
             ))
-        } else if marco::texto(&hola, "appVersion") != Some(self.app_version.as_str())
-            || hola.get("sala").and_then(Value::as_u64) != Some(1)
-        {
+        } else if hola.get("sala").and_then(Value::as_u64) != Some(1) {
+            Some(adios("version", version::detalle_protocolo(&self.app)))
+        } else if marco::texto(&hola, "appVersion") != Some(self.app_version.as_str()) {
             Some(adios(
                 "version",
                 version::detalle(
@@ -1095,6 +1095,7 @@ impl Sala {
                     .ok_or(Fallo("ocupado", "No hay cupos de conexión.".into()))?;
                 self.registrar(conn, envio, recibo, reserva, DatosPar::nuevo(None, &r));
                 guardia.0 = None;
+                self.poner_fase("listo", 0);
                 Ok(json!({"anfitrion": hex::de_clave(&anfitrion), "via": via,
                     "anfitrionVersion":anfitrion_version,"rele":rele,"conexionMs":conexion_ms,"intentos":intentos,
                     "anfitrionDirecciones": dirs_anfitrion, "direcciones": self.direcciones()}))
@@ -1172,6 +1173,7 @@ impl Sala {
 
         let observada = conn.clone();
         let contadores = datos.clone();
+        let actividad = datos.clone();
         // Se toma antes de lanzar la tarea para no perder el estado inicial.
         let inicial = seleccion_rele(&conn.paths());
         tokio::spawn(async move {
@@ -1200,16 +1202,7 @@ impl Sala {
                 match marco::leer_limitado(&mut recibo, &mut bytes).await {
                     Ok(datos) => {
                         // Cada marco válido, incluida presencia, renueva la actividad.
-                        if let Some(par) = sala
-                            .estado
-                            .lock()
-                            .unwrap()
-                            .pares
-                            .get(&quien)
-                            .filter(|p| p.conn.stable_id() == conn.stable_id())
-                        {
-                            par.datos.ultima_actividad.store(ahora(), Ordering::Relaxed);
-                        }
+                        actividad.ultima_actividad.store(ahora(), Ordering::Relaxed);
                         if marcos.tomar(1, Instant::now()).is_err() {
                             break Some(cierre::RITMO);
                         }

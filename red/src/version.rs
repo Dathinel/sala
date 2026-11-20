@@ -35,6 +35,13 @@ pub fn nombre(app: &str) -> String {
     }
 }
 
+pub fn detalle_protocolo(app: &str) -> String {
+    let app = nombre(app);
+    format!(
+        "Tu {app} y esta sala hablan versiones distintas del protocolo de sala: actualiza la que esté más atrás."
+    )
+}
+
 pub fn detalle(app: &str, tuya: &str, suya: &str) -> String {
     let app = nombre(app);
     match comparar(tuya, suya) {
@@ -70,6 +77,13 @@ mod pruebas {
             assert_eq!(comparar(a, b), esperado, "{a} / {b}");
             assert_eq!(comparar(b, a), esperado.map(Ordering::reverse));
         }
+    }
+    #[test]
+    fn protocolo_distinto_tiene_su_propio_texto() {
+        assert!(
+            detalle_protocolo("rodaje")
+                .starts_with("Tu Rodaje y esta sala hablan versiones distintas del protocolo")
+        );
     }
     #[test]
     fn tabla_textos() {

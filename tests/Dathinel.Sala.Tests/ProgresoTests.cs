@@ -50,8 +50,8 @@ public sealed class ProgresoTests
 
         ConcurrentQueue<ProgresoBlob> visto = new();
         luis.BlobProgreso += visto.Enqueue;
-        List<ProgresoBlob> informado = [];
-        await luis.PedirBlobAsync(anf.Clave, huella, 6L * 1024 * 1024, Path.Combine(cLuis, "copia.bin"), 64 << 20, new Progress<ProgresoBlob>(informado.Add));
+        ConcurrentBag<ProgresoBlob> informado = [];
+        await luis.PedirBlobAsync(anf.Clave, huella, 6L * 1024 * 1024, Path.Combine(cLuis, "copia.bin"), 64 << 20, new Progress<ProgresoBlob>(p => informado.Add(p)));
 
         ProgresoBlob[] todos = [.. visto];
         Assert.True(todos.Length >= 2);

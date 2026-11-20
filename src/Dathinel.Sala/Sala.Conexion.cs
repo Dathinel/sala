@@ -90,6 +90,7 @@ public sealed partial class Sala
                     try { alEsperar!(clave); }
                     catch (Exception) { /* un fallo del aviso de la app no debe tumbar la entrada */ }
                 }
+                if (unirse.IsCompleted) return;
                 if (e.TryGetProperty("conexion", out JsonElement con) && con.TryGetProperty("fase", out JsonElement f))
                 {
                     if (con.TryGetProperty("intento", out JsonElement it) && it.TryGetInt32(out int n)) Intento = n;
@@ -107,8 +108,9 @@ public sealed partial class Sala
             {
                 // Aún no hay sala en el proceso (no-abierta) o terminó: se reintenta mientras dure la llamada larga.
             }
-            catch (OperationCanceledException)
+            catch (Exception)
             {
+                // Cancelación o proceso caído: la propia llamada de unirse da el error.
                 return;
             }
             if (!unirse.IsCompleted) await Task.Delay(100, CancellationToken.None).ConfigureAwait(false);
@@ -122,11 +124,15 @@ public sealed partial class Sala
     public int Intento { get; private set; }
 
     public event Action<FaseConexion>? FaseCambia;
+    private readonly Lock _faseCerrojo = new();
 
     private void PonerFase(FaseConexion fase)
     {
-        if (Fase == fase) return;
-        Fase = fase;
+        lock (_faseCerrojo)
+        {
+            if (Fase == fase) return;
+            Fase = fase;
+        }
         FaseCambia?.Invoke(fase);
     }
 

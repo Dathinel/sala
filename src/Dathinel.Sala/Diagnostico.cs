@@ -92,7 +92,8 @@ public sealed record Diagnostico(string Clave, bool EsAnfitrion, string AppVersi
         _ => "sin determinar",
     };
 
-    private static string? NombreServidor(string? url) => Uri.TryCreate(url, UriKind.Absolute, out Uri? u) ? u.Host : null;
+    private static string? NombreServidor(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out Uri? u) && !System.Net.IPAddress.TryParse(u.Host.Trim('[', ']'), out _) ? u.Host : null;
 
     private static string Duracion(TimeSpan d)
     {
