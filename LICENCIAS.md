@@ -23,4 +23,4 @@ Sin paquetes de NuGet: solo la biblioteca estándar de .NET 10 (MIT). Las prueba
 
 ## Herramientas de compilación (no se distribuyen)
 
-SDK de .NET 10.0.401 (MIT), Rust 1.100.0 (MIT o Apache-2.0) con rustup 1.29.3, cargo-deny 0.20.2 (MIT o Apache-2.0), todos en `.entorno\` con huella fijada (`build/preparar-entorno.ps1`).
+SDK de .NET 10.0.403 (MIT), Rust 1.100.0 (MIT o Apache-2.0) con rustup 1.29.3, cargo-deny 0.20.2 (MIT o Apache-2.0), todos en `.entorno\` con huella fijada (`build/preparar-entorno.ps1`).

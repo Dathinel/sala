@@ -6,7 +6,7 @@ Capa común de trabajo en grupo de Rodaje y Unicomp (decisión de Daniel, 15-nov
 - Solo lo común: transporte (iroh, relé público de n0 con opción propia), sala (billetes, aprobación, claves ancladas, roles, reservas por clave de texto, orden central de cargas opacas, presencia, épocas y traspaso, blobs por huella) y el protocolo de módulos. Nada que sepa de proyectos de Rodaje ni de montajes de Unicomp.
 - Ningún mensaje lleva rutas ni órdenes: cargas opacas que cada app valida.
 - Un cambio de la API pasa por las sesiones de Rodaje y Unicomp (buzón `D:\Programas de uso libre\coordinacion-rodaje-unicomp.md`).
-- Entorno: `build\preparar-entorno.ps1` (SDK .NET 10.0.401, Rust 1.100.0, cargo-deny 0.20.2 en `.entorno\`); después `. build\entorno.ps1`. Nada global.
+- Entorno: `build\preparar-entorno.ps1` (SDK .NET 10.0.403, Rust 1.100.0, cargo-deny 0.20.2 en `.entorno\`); después `. build\entorno.ps1`. Nada global.
 - `src/Rodaje.Modules.Protocol` es copia de Rodaje (`91eab90a`) hasta el bloque de integración, que lo mueve y deja a Rodaje usándolo desde el submódulo. No editarlo aquí sin llevar el cambio a Rodaje.
 
 ## Estado

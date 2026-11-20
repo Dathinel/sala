@@ -7,14 +7,10 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <IsPackable>false</IsPackable>
     <NoWarn>$(NoWarn);CA1031;CA2007</NoWarn>
-    <!-- CVE-2026-111497 (Brotli): el SDK 10.0.401 baja ILC y el runtime NativeAOT 10.0.12; 10.0.14 es la primera
-         versión parcheada. RuntimeFrameworkVersion solo en compilación por RID: el exe administrado sigue en 10.0.12. -->
-    <RuntimeFrameworkVersion Condition="'$(RuntimeIdentifier)' != ''">10.0.14</RuntimeFrameworkVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dathinel.Sala\Dathinel.Sala.csproj" />
-    <KnownILCompilerPack Update="Microsoft.DotNet.ILCompiler" Condition="'$(TargetFramework)' == 'net10.0'" ILCompilerPackVersion="10.0.14" />
   </ItemGroup>
 
 </Project>
