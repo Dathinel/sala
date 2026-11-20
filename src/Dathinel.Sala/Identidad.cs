@@ -217,13 +217,22 @@ public static partial class Identidad
 
     private static byte[] LeerBytes(string archivo)
     {
-        try
+        // En Windows, otra instancia que acaba de publicar o está leyendo el archivo lo tiene abierto un instante
+        // (violación de uso compartido): se reintenta hasta ~1 s antes de rendirse.
+        for (int intento = 1; ; intento++)
         {
-            return File.ReadAllBytes(archivo);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
-        {
-            throw new SalaException("identidad", $"No se pudo leer la identidad de «{archivo}»: {ex.Message}", ex);
+            try
+            {
+                return File.ReadAllBytes(archivo);
+            }
+            catch (IOException) when (intento < 40 && File.Exists(archivo))
+            {
+                Thread.Sleep(25);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+            {
+                throw new SalaException("identidad", $"No se pudo leer la identidad de «{archivo}»: {ex.Message}", ex);
+            }
         }
     }
 
