@@ -2,13 +2,17 @@
 
 mod billete;
 mod blobs;
+mod diagnostico;
 mod hex;
 mod limites;
 mod marco;
 mod modulo;
 #[cfg(test)]
 mod pruebas;
+#[cfg(feature = "prueba")]
+mod rele_prueba;
 mod sala;
+mod version;
 
 use std::time::Duration;
 
@@ -17,15 +21,6 @@ const ARG_TUBERIA: &str = "--rodaje-pipe";
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let Some(nombre) = args
-        .iter()
-        .position(|a| a == ARG_TUBERIA)
-        .and_then(|i| args.get(i + 1))
-    else {
-        eprintln!("Este programa es el módulo de red de Sala; lo abre la app.");
-        std::process::exit(64);
-    };
-
     #[cfg(unix)]
     {
         // Si la app muere de golpe, el proceso no se queda vivo (en Windows lo hace el Job Object de la app).
@@ -39,6 +34,27 @@ async fn main() {
             }
         });
     }
+
+    #[cfg(feature = "prueba")]
+    if args.iter().any(|a| a == "--rele-prueba") {
+        let codigo = match rele_prueba::ejecutar(&args).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("No se pudo ejecutar el relé de pruebas: {e}");
+                2
+            }
+        };
+        std::process::exit(codigo);
+    }
+
+    let Some(nombre) = args
+        .iter()
+        .position(|a| a == ARG_TUBERIA)
+        .and_then(|i| args.get(i + 1))
+    else {
+        eprintln!("Este programa es el módulo de red de Sala; lo abre la app.");
+        std::process::exit(64);
+    };
 
     let codigo = match conectar(nombre).await {
         Ok(c) => c,
