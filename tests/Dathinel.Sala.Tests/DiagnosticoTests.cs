@@ -83,7 +83,8 @@ public sealed class DiagnosticoTests
         Assert.DoesNotContain("203.0.113", ficha);
         Assert.DoesNotContain(Clave, ficha);
         Assert.DoesNotContain("\\", ficha);
-        Assert.Contains("relé propio rele.ejemplo.org", Leer(json.Replace("\"rele\":\"n0\"", "\"rele\":\"https://rele.ejemplo.org\""), rele: "https://rele.ejemplo.org").ParaTelefono(Ahora));
+        string propio = json.Replace("https://euw1-1.relay.n0.iroh.link./", "https://rele.ejemplo.org/").Replace("\"rele\":\"n0\"", "\"rele\":\"https://rele.ejemplo.org\"");
+        Assert.Contains("relé propio rele.ejemplo.org", Leer(propio, rele: "https://rele.ejemplo.org").ParaTelefono(Ahora));
     }
 
     [Fact]

@@ -384,7 +384,7 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         *ranura().lock().unwrap() = Some(sala.clone());
         tokio::spawn(sala.clone().aceptar_conexiones());
         Ok(
-            json!({"clave": hex::de_clave(&sala.ep.id()), "direcciones": sala.direcciones(), "red":sala.red()}),
+            json!({"clave": hex::de_clave(&sala.ep.id()), "direcciones": sala.direcciones(), "red":sala.red(None)}),
         )
     } else {
         let alias = texto_corto(&p, "alias")?;
@@ -435,8 +435,11 @@ impl Sala {
             .map(|r| r.url().to_string())
     }
 
-    fn red(&self) -> Value {
-        let url = self.rele_de_casa();
+    /// `de_pares`: el relé de un camino elegido, para el invitado que ya habla por un relé aunque su relé de casa aún no haya contestado.
+    fn red(&self, de_pares: Option<String>) -> Value {
+        let url = self
+            .rele_de_casa()
+            .or_else(|| de_pares.filter(|_| self.rele.is_some()));
         let conectado = url.is_some();
         diagnostico::red(
             self.rele.as_deref().unwrap_or("ninguno"),
@@ -656,11 +659,15 @@ impl Sala {
 
     fn estado(&self) -> Value {
         let e = self.estado.lock().unwrap();
+        let mut de_pares = None;
         let pares: Vec<diagnostico::Par> = e
             .pares
             .iter()
             .map(|(k, par)| {
                 let (via, rele, rtt) = camino(&par.conn);
+                if de_pares.is_none() {
+                    de_pares.clone_from(&rele);
+                }
                 let stats = par.conn.stats();
                 diagnostico::Par {
                     clave: hex::de_clave(k),
@@ -685,7 +692,7 @@ impl Sala {
             hex::de_clave(&self.ep.id()),
             self.direcciones(),
             self.es_anfitrion(),
-            self.red(),
+            self.red(de_pares),
             pares,
             e.ultima_caida.clone(),
         )
