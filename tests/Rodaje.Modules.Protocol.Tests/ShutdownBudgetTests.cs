@@ -30,6 +30,7 @@ public sealed partial class ShutdownBudgetTests
     /// <see cref="A_frozen_module_is_dead_within_the_default_budget_plus_margin"/> (TiempoReal).
     /// </remarks>
     [FreezableFact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task A_frozen_module_is_dead_when_dispose_returns()
     {
         ModuleClientOptions options = new() { ShutdownGrace = TimeSpan.FromMilliseconds(500) };

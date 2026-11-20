@@ -1,0 +1,38 @@
+# Pasada nocturna de Sala: las pruebas de tiempo real y de rendimiento del protocolo, que miden contra el reloj de pared y
+# ci.yml deja fuera de los PR para no dar falsos rojos. No bloquea nada; mirar la corrida programada.
+name: Nocturna
+
+on:
+  schedule:
+    - cron: '45 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/nocturna.yml
+
+permissions:
+  contents: read
+
+jobs:
+  tiempo-real:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Entorno (.NET, Rust, cargo-deny)
+        shell: pwsh
+        run: ./build/preparar-entorno.ps1
+
+      - name: Pruebas de tiempo real y de rendimiento (C#)
+        run: |
+          source build/entorno.sh
+          dotnet build Sala.slnx -warnaserror
+          dotnet test Sala.slnx --no-build --filter "Categoria=TiempoReal|Categoria=Rendimiento" --logger "console;verbosity=normal" --blame-hang-timeout 10m

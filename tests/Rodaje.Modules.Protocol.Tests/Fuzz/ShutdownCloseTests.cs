@@ -23,6 +23,7 @@ public sealed class ShutdownCloseTests
     private const int Rounds = 20;
 
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task The_module_reads_the_shutdown_and_exits_cleanly_before_the_editor_closes()
     {
         using CancellationTokenSource burn = new();
@@ -48,6 +49,7 @@ public sealed class ShutdownCloseTests
     }
 
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task A_module_that_does_not_close_after_shutdown_is_closed_after_the_grace()
     {
         TaskCompletionSource<string?> shutdown = new(TaskCreationOptions.RunContinuationsAsynchronously);

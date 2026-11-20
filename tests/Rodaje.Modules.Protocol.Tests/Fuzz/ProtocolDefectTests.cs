@@ -23,6 +23,7 @@ public sealed class ProtocolDefectTests
     /// Se reprodujo en Linux en 3 a 12 de cada 200 rondas.
     /// </summary>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Cancel_racing_the_end_of_a_call_does_not_close_the_connection()
     {
         for (int round = 0; round < 200; round++)
@@ -225,6 +226,7 @@ public sealed class ProtocolDefectTests
     /// de 50 rondas colgadas). Ahora toda operación termina con error tras el fallo.
     /// </summary>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Operations_waiting_to_write_finish_when_the_client_fails()
     {
         for (int round = 0; round < 50; round++)

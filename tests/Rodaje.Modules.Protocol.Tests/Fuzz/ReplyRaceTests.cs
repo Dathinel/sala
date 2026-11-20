@@ -21,6 +21,7 @@ public sealed class ReplyRaceTests
     /// <c>shutdown</c>. El cierre tiene que esperar a la respuesta, y la respuesta tiene que llegar.
     /// </summary>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Shutdown_entre_el_fin_de_la_funcion_y_la_respuesta_no_pierde_la_respuesta()
     {
         TaskCompletionSource reached = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -136,6 +137,7 @@ public sealed class ReplyRaceTests
     /// llena, y cerrar el canal no la desatasca.
     /// </summary>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Con_el_editor_sin_leer_el_cierre_contesta_las_llamadas_sin_arrancar_dentro_de_un_tope()
     {
         using ManualResetEventSlim reached = new();
@@ -245,6 +247,7 @@ public sealed class ReplyRaceTests
     /// comprueba es lo que salió durante el cierre: nada. Antes de la tarea 303, <c>RunAsync</c> no volvía.
     /// </summary>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Una_llamada_empezada_que_no_atiende_la_cancelacion_no_recibe_cancelled_y_el_cierre_vuelve()
     {
         TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -294,6 +297,7 @@ public sealed class ReplyRaceTests
     /// empezado. La llamada contesta ella, dentro del tope, y sale exactamente una trama: su resultado, sin <c>cancelled</c>.
     /// </summary>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Una_llamada_empezada_que_termina_dentro_del_tope_contesta_solo_su_resultado()
     {
         TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
