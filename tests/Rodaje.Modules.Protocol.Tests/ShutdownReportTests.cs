@@ -123,6 +123,7 @@ public sealed class ShutdownReportTests
     /// <see cref="ModuleProcess.Exited"/> no terminaba nunca. Aquí la muerte del cierre no mata: el proceso muere después.
     /// </summary>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Exited_completes_when_the_module_dies_after_the_close()
     {
         ConcurrentQueue<string> lines = new();
