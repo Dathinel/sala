@@ -88,7 +88,7 @@ public sealed partial class Sala : IAsyncDisposable
         if (lista.Any(m => !Limites.EsClave(m.Clave) || !Limites.EsAlias(m.Alias)))
             throw new ArgumentException("Un anclado tiene una clave o un alias inválido.", nameof(anclados));
         ProcesoRed red = await ProcesoRed.AbrirAsync(opciones.Ejecutable, ct).ConfigureAwait(false);
-        Sala s = new(red, identidad, opciones, validar) { Epoca = epoca, Seq = seq, EsAnfitrion = true };
+        Sala s = new(red, identidad, opciones, validar) { Epoca = epoca, Seq = seq, EsAnfitrion = true, Fase = FaseConexion.Conectado };
         suscribir?.Invoke(s);
         try
         {
@@ -483,6 +483,7 @@ public sealed partial class Sala : IAsyncDisposable
                         foreach ((string c, string d) in reservas) _reservas[c] = new Reserva(d, Ahora);
                     }
                     MiembrosCambiaron?.Invoke();
+                    PonerFase(FaseConexion.Conectado);
                     _conectado = true;
                     _sinAnfitrionDesde = null;
                     _bienvenida.TrySetResult();

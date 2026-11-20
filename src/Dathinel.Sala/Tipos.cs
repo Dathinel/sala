@@ -27,6 +27,35 @@ public sealed record Solicitud(string Clave, string Alias)
 
 public sealed record Directo(string De, JsonElement Datos);
 
+/// <summary>En qué va <c>UnirseAsync</c> (y cada reconexión): para la barra o la frase de «Conectando…» de la app.</summary>
+public enum FaseConexion
+{
+    /// <summary>Preparando la red y buscando al anfitrión.</summary>
+    Buscando,
+    /// <summary>Marcando al anfitrión (directo o por relé); con reintentos, <c>Diagnostico.Intento</c> dice cuál.</summary>
+    Conectando,
+    /// <summary>Con el anfitrión; esperando que apruebe la entrada (hasta 10 min).</summary>
+    EsperandoAprobacion,
+    /// <summary>Admitido; recibiendo el estado de la sala.</summary>
+    Sincronizando,
+    Conectado,
+    /// <summary>Se perdió al anfitrión; la sala reintenta sola.</summary>
+    Desconectado,
+}
+
+/// <summary>
+/// Avance de una descarga de blob, listo para una barra con porcentaje, «quedan N s» y «último avance hace N s»
+/// (docs/progreso-operaciones.md de Rodaje). Cancelar es cancelar el <see cref="CancellationToken"/> de <c>PedirBlobAsync</c>.
+/// </summary>
+/// <param name="Hecho">Bytes ya bajados.</param>
+/// <param name="Total">Tamaño exacto del blob.</param>
+/// <param name="Restante">Estimado con la velocidad media desde el inicio; <c>null</c> mientras no haya datos para estimar.</param>
+public sealed record ProgresoBlob(string De, string Huella, long Intento, long Hecho, long Total, DateTimeOffset Inicio,
+    DateTimeOffset UltimoAvance, double BytesPorSegundo, TimeSpan? Restante)
+{
+    public double Fraccion => Total <= 0 ? 1 : Math.Clamp((double)Hecho / Total, 0, 1);
+}
+
 /// <summary>Cómo sale a la red: relés de n0 (por defecto), ninguno (solo direcciones directas) o un relé propio.</summary>
 /// <param name="Mdns">Descubrir al anfitrión en la red local por su clave, sin direcciones (anuncia el equipo en la red local).</param>
 public sealed record Red(string Rele = "n0", bool SoloRele = false, bool Mdns = false)

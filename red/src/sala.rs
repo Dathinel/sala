@@ -133,6 +133,8 @@ pub struct Sala {
     rele_inseguro: bool,
     solo_rele: bool,
     mdns: bool,
+    /// Fase de `unirse` y el intento de conexión en curso (api.md §2.3).
+    fase: Mutex<(&'static str, u32)>,
     pub(crate) carpeta: PathBuf,
     pub(crate) estado: Mutex<Estado>,
     pub(crate) blobs: Mutex<crate::blobs::Blobs>,
@@ -144,6 +146,8 @@ pub struct Sala {
 }
 
 static SALA: OnceLock<Mutex<Option<Arc<Sala>>>> = OnceLock::new();
+/// La sala del invitado mientras `unirse` espera (la conexión, la aprobación): `estado` ya puede decir la clave propia y la fase.
+static ENTRANDO: Mutex<Option<Arc<Sala>>> = Mutex::new(None);
 static ABRIENDO: AtomicBool = AtomicBool::new(false);
 
 fn ranura() -> &'static Mutex<Option<Arc<Sala>>> {
@@ -184,7 +188,10 @@ pub async fn llamar(funcion: &str, p: Value, cancelar: Arc<Notify>) -> Result<Va
         "expulsar" => actual()?.expulsar(&p),
         "enviar" => actual()?.enviar(&p),
         "recibir" => actual()?.recibir(&p, cancelar).await,
-        "estado" => Ok(actual()?.estado()),
+        "estado" => {
+            let sala = actual().or_else(|e| ENTRANDO.lock().unwrap().clone().ok_or(e))?;
+            Ok(sala.estado())
+        }
         "ascender" => actual()?.ascender(&p),
         "blob-ofrecer" => actual()?.blob_ofrecer(&p),
         "blob-retirar" => actual()?.blob_retirar(&p),
@@ -356,6 +363,7 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         rele_inseguro: inseguro,
         solo_rele,
         mdns,
+        fase: Mutex::new(("listo", 0)),
         carpeta,
         estado: Mutex::default(),
         eventos: Mutex::default(),
@@ -388,10 +396,12 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         )
     } else {
         let alias = texto_corto(&p, "alias")?;
+        *ENTRANDO.lock().unwrap() = Some(sala.clone());
         let r = tokio::select! {
             r = sala.clone().entrar(&p, alias) => r,
             _ = cancelar.notified() => fallo("cancelled", "Cancelado."),
         };
+        *ENTRANDO.lock().unwrap() = None;
         match r {
             Ok(v) => {
                 *ranura().lock().unwrap() = Some(sala);
@@ -423,6 +433,11 @@ impl Sala {
             }
         }
         d
+    }
+
+    fn conexion(&self) -> Value {
+        let (fase, intento) = *self.fase.lock().unwrap();
+        json!({"fase": fase, "intento": intento})
     }
 
     fn rele_de_casa(&self) -> Option<String> {
@@ -693,6 +708,7 @@ impl Sala {
             self.direcciones(),
             self.es_anfitrion(),
             self.red(de_pares),
+            self.conexion(),
             pares,
             e.ultima_caida.clone(),
         )
@@ -955,7 +971,12 @@ impl Sala {
 
     // ---------- invitado: entrar ----------
 
+    fn poner_fase(&self, fase: &'static str, intento: u32) {
+        *self.fase.lock().unwrap() = (fase, intento);
+    }
+
     async fn entrar(self: Arc<Self>, p: &Value, alias: String) -> Result<Value, Fallo> {
+        self.poner_fase("buscando", 0);
         let (destino, billete_id, secreto) = if let Some(t) = marco::texto(p, "billete") {
             let b = Billete::decodificar(t)
                 .ok_or(Fallo("billete-invalido", "El enlace no es válido.".into()))?;
@@ -1005,6 +1026,7 @@ impl Sala {
         let mut intentos = 0;
         let conn = loop {
             intentos += 1;
+            self.poner_fase("conectando", intentos);
             if let Ok(Ok(conn)) = tokio::time::timeout(
                 Duration::from_secs(15),
                 self.ep.connect(destino.clone(), ALPN),
@@ -1033,6 +1055,7 @@ impl Sala {
             .write_all(&marco::armar(&hola))
             .await
             .map_err(|_| cierre_sin_adios(&conn))?;
+        self.poner_fase("esperando-aprobacion", intentos);
         let r = tokio::time::timeout(
             ESPERA_APROBACION + ESPERA_HOLA,
             marco::leer(&mut recibo, MAX_HOLA, marco::MAX_PROFUNDIDAD_PAR),
@@ -1045,6 +1068,7 @@ impl Sala {
         };
         match marco::texto(&r, "type") {
             Some("admitido") => {
+                self.poner_fase("sincronizando", intentos);
                 if r.get("appVersion")
                     .is_some_and(|v| v.as_str() != Some(self.app_version.as_str()))
                     || r.get("sala").is_some_and(|v| v.as_u64() != Some(1))

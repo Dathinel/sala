@@ -61,7 +61,7 @@ public sealed partial class Sala
             p["direcciones"] = new JsonArray([.. (direcciones ?? []).Select(d => (JsonNode)d)]);
         }
         Task<JsonElement> unirse = _red.LlamarAsync("unirse", p, ct);
-        if (alEsperar is not null) _ = AvisarClaveAsync(unirse, alEsperar, ct);
+        _ = VigilarEntradaAsync(unirse, alEsperar, ct);
         JsonElement r = await unirse.ConfigureAwait(false);
         _anfitrion = r.GetProperty("anfitrion").GetString()!;
         if (r.TryGetProperty("conexionMs", out JsonElement ms) && ms.ValueKind == JsonValueKind.Number && ms.TryGetInt64(out long n)) _conexionMs = n;
@@ -71,20 +71,36 @@ public sealed partial class Sala
         Clave = e.GetProperty("clave").GetString()!;
     }
 
-    /// <summary>Mientras <c>unirse</c> espera la aprobación, saca la clave propia de <c>estado</c> en cuanto el proceso la tiene.</summary>
-    private async Task AvisarClaveAsync(Task<JsonElement> unirse, Action<string> alEsperar, CancellationToken ct)
+    /// <summary>
+    /// Mientras <c>unirse</c> espera (conexión, aprobación), lee <c>estado</c> cada 100 ms: la fase para
+    /// <see cref="FaseCambia"/> y, la primera vez, la clave propia para <paramref name="alEsperar"/>.
+    /// </summary>
+    private async Task VigilarEntradaAsync(Task<JsonElement> unirse, Action<string>? alEsperar, CancellationToken ct)
     {
+        bool clavePuesta = alEsperar is null;
         while (!unirse.IsCompleted && !ct.IsCancellationRequested)
         {
             try
             {
                 JsonElement e = await _red.LlamarAsync("estado", null, ct).ConfigureAwait(false);
-                if (e.TryGetProperty("clave", out JsonElement c) && c.GetString() is { Length: > 0 } clave)
+                if (!clavePuesta && e.TryGetProperty("clave", out JsonElement c) && c.GetString() is { Length: > 0 } clave)
                 {
                     Clave = clave;
-                    try { alEsperar(clave); }
+                    clavePuesta = true;
+                    try { alEsperar!(clave); }
                     catch (Exception) { /* un fallo del aviso de la app no debe tumbar la entrada */ }
-                    return;
+                }
+                if (e.TryGetProperty("conexion", out JsonElement con) && con.TryGetProperty("fase", out JsonElement f))
+                {
+                    if (con.TryGetProperty("intento", out JsonElement it) && it.TryGetInt32(out int n)) Intento = n;
+                    if (f.GetString() switch
+                    {
+                        "buscando" => FaseConexion.Buscando,
+                        "conectando" => FaseConexion.Conectando,
+                        "esperando-aprobacion" => FaseConexion.EsperandoAprobacion,
+                        "sincronizando" => FaseConexion.Sincronizando,
+                        _ => (FaseConexion?)null,
+                    } is { } fase) PonerFase(fase);
                 }
             }
             catch (SalaException)
@@ -99,11 +115,26 @@ public sealed partial class Sala
         }
     }
 
+    /// <summary>Fase de la conexión con el anfitrión; <see cref="FaseCambia"/> avisa de cada cambio.</summary>
+    public FaseConexion Fase { get; private set; } = FaseConexion.Buscando;
+
+    /// <summary>Intento de conexión en curso (1 a 3) mientras <see cref="Fase"/> es <see cref="FaseConexion.Conectando"/>.</summary>
+    public int Intento { get; private set; }
+
+    public event Action<FaseConexion>? FaseCambia;
+
+    private void PonerFase(FaseConexion fase)
+    {
+        if (Fase == fase) return;
+        Fase = fase;
+        FaseCambia?.Invoke(fase);
+    }
+
     /// <summary>Cómo va la conexión (docs/api.md §2.3 y §5.9). Una llamada local barata: se puede pedir cada segundo.</summary>
     public async Task<Diagnostico> DiagnosticoAsync(CancellationToken ct = default)
     {
         JsonElement e = await _red.LlamarAsync("estado", null, ct).ConfigureAwait(false);
-        return Diagnostico.Leer(e, _opciones.AppVersion, _opciones.Red.Rele, EsAnfitrion, Volatile.Read(ref _reconexiones), _conexionMs, _ultimaReconexion, _ultimaCaida);
+        return Diagnostico.Leer(e, _opciones.AppVersion, _opciones.Red.Rele, EsAnfitrion, Volatile.Read(ref _reconexiones), _conexionMs, _ultimaReconexion, _ultimaCaida, Fase, Intento);
     }
 
     private Task<JsonElement> SincronizarAsync(CancellationToken ct)
@@ -168,6 +199,7 @@ public sealed partial class Sala
         if (!_reconectando)
         {
             _reconectando = true;
+            PonerFase(FaseConexion.Desconectado);
             Desconectada?.Invoke();
         }
         TimeSpan espera = TimeSpan.FromSeconds(1);

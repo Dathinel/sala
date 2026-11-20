@@ -35,10 +35,11 @@ pub fn estado(
     direcciones: Vec<String>,
     anfitrion: bool,
     red: Value,
+    conexion: Value,
     pares: Vec<Par>,
     caida: Option<Value>,
 ) -> Value {
-    json!({"clave":clave,"direcciones":direcciones,"rol":if anfitrion {"anfitrion"} else {"invitado"},"red":red,"pares":pares,"ultimaCaida":caida})
+    json!({"clave":clave,"direcciones":direcciones,"rol":if anfitrion {"anfitrion"} else {"invitado"},"red":red,"conexion":conexion,"pares":pares,"ultimaCaida":caida})
 }
 
 #[cfg(test)]
@@ -68,12 +69,13 @@ mod pruebas {
             vec![],
             false,
             red("ninguno", None, false, false, false),
+            json!({"fase":"listo","intento":0}),
             vec![par],
             None,
         );
         assert_eq!(
             vacio,
-            json!({"clave":"propia","direcciones":[],"rol":"invitado","red":{"rele":"ninguno","releUrl":null,"releConectado":false,"soloRele":false,"mdns":false},"pares":[{"clave":"par","alias":null,"via":null,"rele":null,"rttMs":null,"perdidosPct":null,"paquetesEnviados":0,"paquetesPerdidos":0,"enviadosB":0,"recibidosB":0,"appVersion":null,"protocolo":null,"conectadoDesde":0,"ultimaActividad":0,"cambiosDeCamino":0}],"ultimaCaida":null})
+            json!({"clave":"propia","direcciones":[],"rol":"invitado","red":{"rele":"ninguno","releUrl":null,"releConectado":false,"soloRele":false,"mdns":false},"conexion":{"fase":"listo","intento":0},"pares":[{"clave":"par","alias":null,"via":null,"rele":null,"rttMs":null,"perdidosPct":null,"paquetesEnviados":0,"paquetesPerdidos":0,"enviadosB":0,"recibidosB":0,"appVersion":null,"protocolo":null,"conectadoDesde":0,"ultimaActividad":0,"cambiosDeCamino":0}],"ultimaCaida":null})
         );
         let par = Par {
             clave: "par".into(),
@@ -104,6 +106,7 @@ mod pruebas {
                 true,
                 false,
             ),
+            json!({"fase":"sincronizando","intento":2}),
             vec![par],
             Some(caida.clone()),
         );
@@ -117,5 +120,9 @@ mod pruebas {
             json!({"rele":"n0","releUrl":"https://relay.example/","releConectado":true,"soloRele":true,"mdns":false})
         );
         assert_eq!(completo["rol"], "anfitrion");
+        assert_eq!(
+            completo["conexion"],
+            json!({"fase":"sincronizando","intento":2})
+        );
     }
 }

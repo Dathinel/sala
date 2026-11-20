@@ -27,11 +27,11 @@ public sealed record Caida(string Clave, string Motivo, DateTimeOffset En);
 
 /// <summary>Cómo va la conexión: lo que la app enseña en su panel de conexión y lo que se lee por teléfono.</summary>
 public sealed record Diagnostico(string Clave, bool EsAnfitrion, string AppVersion, DiagnosticoRed Red, IReadOnlyList<DiagnosticoPar> Pares,
-    Caida? UltimaCaida, int Reconexiones, long? ConexionMs, DateTimeOffset? UltimaReconexion)
+    Caida? UltimaCaida, int Reconexiones, long? ConexionMs, DateTimeOffset? UltimaReconexion, FaseConexion Fase = FaseConexion.Conectado, int Intento = 0)
 {
     /// <summary>La respuesta de <c>estado</c> (§2.3) más lo que solo sabe <c>Dathinel.Sala</c>. Lo que falte o venga mal queda en <c>null</c>.</summary>
     internal static Diagnostico Leer(JsonElement e, string appVersion, string releSolicitado, bool esAnfitrion,
-        int reconexiones, long? conexionMs, DateTimeOffset? ultimaReconexion, Caida? caidaLocal)
+        int reconexiones, long? conexionMs, DateTimeOffset? ultimaReconexion, Caida? caidaLocal, FaseConexion fase = FaseConexion.Conectado, int intento = 0)
     {
         JsonElement red = Propiedad(e, "red");
         DiagnosticoRed r = new(Texto(red, "rele") ?? releSolicitado, Texto(red, "releUrl"), Booleano(red, "releConectado"),
@@ -52,7 +52,7 @@ public sealed record Diagnostico(string Clave, bool EsAnfitrion, string AppVersi
         JsonElement c = Propiedad(e, "ultimaCaida");
         if (Texto(c, "clave") is { } ck && Texto(c, "motivo") is { } cm && Fecha(c, "en") is { } cf) caida = new Caida(ck, cm, cf);
         if (caidaLocal is not null && (caida is null || caidaLocal.En > caida.En)) caida = caidaLocal;
-        return new Diagnostico(Texto(e, "clave") ?? "", esAnfitrion, appVersion, r, pares, caida, reconexiones, conexionMs, ultimaReconexion);
+        return new Diagnostico(Texto(e, "clave") ?? "", esAnfitrion, appVersion, r, pares, caida, reconexiones, conexionMs, ultimaReconexion, fase, intento);
     }
 
     /// <summary>
