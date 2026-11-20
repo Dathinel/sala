@@ -30,6 +30,7 @@ public sealed class FailPathTests
     /// <see cref="MaxRounds"/> y, si tampoco, falla: no puede pasar sin haber mirado una sola vuelta (tarea 310).
     /// </remarks>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Fail_does_not_wait_for_a_slow_continuation_on_completion()
     {
         int round = 0;
