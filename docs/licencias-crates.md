@@ -2,6 +2,8 @@
 
 Todos los crates de `red/Cargo.lock` (cualquier plataforma) con la expresión de licencia de su `Cargo.toml`; sale de `cargo metadata`. La política está en `red/deny.toml` y la CI la comprueba con `cargo deny check`. Donde hay `OR`, Sala usa la opción permisiva.
 
+Solo con el feature `prueba`: `iroh/test-utils` añade 51 crates al lockfile (servidor de relé, axum, clap, rcgen, x509-parser y sus dependencias); no forman parte del binario normal. `n0-future` ya estaba en el árbol normal y en la tabla.
+
 | Crate | Versión | Licencia |
 |---|---|---|
 | acto | 0.8.2 | Apache-2.0 OR MIT |

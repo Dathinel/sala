@@ -75,6 +75,7 @@ Para el panel de conexión de la app (Rodaje B11) y para leerlo por teléfono. L
 {
   "clave": "<64 hex>", "direcciones": ["…"], "rol": "anfitrion",
   "red": {"rele": "n0", "releUrl": "https://…", "releConectado": true, "soloRele": false, "mdns": false},
+  "conexion": {"fase": "listo", "intento": 0},
   "pares": [{
     "clave": "<64 hex>", "alias": "Luis",
     "via": "rele", "rele": "https://…",
@@ -88,6 +89,7 @@ Para el panel de conexión de la app (Rodaje B11) y para leerlo por teléfono. L
 ```
 
 - `red`: lo que se pidió y lo que hay. `releUrl` es el relé de casa en uso (`null` con `rele: "ninguno"` o sin conexión); `releConectado` es `false` mientras el equipo no haya contactado con él: sin relé, desde fuera de la red local no entra nadie.
+- `conexion`: la fase de `unirse` (`buscando`, `conectando` con su `intento` de 1 a 3, `esperando-aprobacion`, `sincronizando`; `listo` en el anfitrión y fuera de una entrada). **`estado` se puede llamar mientras `unirse` espera**: el proceso ya tiene su clave (`clave`) y su fase, para enseñar las cuatro palabras al invitado y una barra de pasos. `releConectado` también es `true` si el camino en uso es un relé aunque el relé de casa aún no haya contestado.
 - `via`: camino **elegido** ahora, `directo` o `rele`; `rele` es la URL del relé de ese camino (`null` si es directo). `cambiosDeCamino`: veces que el camino elegido cambió desde que el par entró.
 - `rttMs`: ida y vuelta del camino elegido que mide QUIC (con las muestras del propio tráfico, no un `ping` aparte; `null` si aún no hay). `perdidosPct`: paquetes perdidos entre enviados de toda la conexión, con un decimal (`null` con menos de 100 enviados).
 - `appVersion` y `protocolo` son los del `hola` del par (en el anfitrión) o los del `admitido` (en el invitado). Con la comprobación de §3.1, un par de otra versión no llega a estar en `pares`.
@@ -191,7 +193,7 @@ Guid id = await invitado.EnviarAsync(datos, reservas: ["pista:a2"]);   // la res
 | Miembro | Qué hace |
 |---|---|
 | `HospedarAsync(identidad, opciones, anclados, validar, epoca = 1, seq = 0, suscribir)` | Abre la sala. `anclados`: los miembros que la app guardó (clave, alias, rol; menos que `MaxMiembros`). `validar`: `Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>`, §5.3 |
-| `UnirseAsync(identidad, opciones, billete \| anfitrion + direcciones, epoca = 0, ultimoSeq = 0, suscribir, validar)` | Entra; vuelve tras la aprobación y la `bienvenida`. `suscribir(sala)` se llama antes de conectar, para no perder los `orden` que reponen justo después. `validar` solo se usa si llega a anfitrión (traspaso o suplente) |
+| `UnirseAsync(identidad, opciones, billete \| anfitrion + direcciones, epoca = 0, ultimoSeq = 0, suscribir, validar, alEsperar)` | Entra; vuelve tras la aprobación y la `bienvenida`. `suscribir(sala)` se llama antes de conectar, para no perder los `orden` que reponen justo después. `validar` solo se usa si llega a anfitrión (traspaso o suplente). `alEsperar(clave)` se llama con la clave pública propia en cuanto el proceso de red la tiene, mientras se espera la aprobación (hasta 10 min): la app enseña las cuatro palabras (`Huella.Palabras`) para dictárselas al anfitrión |
 | `NuevoBilleteAsync`, `RevocarAsync`, `AceptarAsync(clave, rol)`, `RechazarAsync`, `ExpulsarAsync`, `CambiarRolAsync(clave, rol)` | Anfitrión. `CambiarRolAsync` pasa por el mismo turno que el orden; a `Mirar` suelta sus reservas |
 | `EnviarAsync(datos, reservas)` | Propone una carga y vuelve con su id. En el anfitrión pasa por el mismo `validar` sin red. Sin anfitrión queda pendiente (`Pendientes`) y sale al volver |
 | `EnviarDirectoAsync(datos, a)` | Mensaje de la app **fuera del orden**: ni se valida ni se numera ni entra en el historial; a un miembro o a todos (en el invitado, solo al anfitrión). Para el manifiesto de la instantánea, pedir huellas o anunciar blobs |
@@ -200,7 +202,7 @@ Guid id = await invitado.EnviarAsync(datos, reservas: ["pista:a2"]);   // la res
 | `OfrecerBlobsAsync`, `RetirarBlobsAsync`, `PedirBlobAsync` | §5.7 |
 | `TraspasarAsync(clave)`, `TomarAnfitrionAsync()`, `ConfirmarInstantaneaAsync(epoca, seq)` | §5.6 |
 | `Miembros`, `Clave`, `Anfitrion`, `Suplente`, `Epoca`, `Seq`, `Rol`, `EsAnfitrion`, `Direcciones`, `Pendientes` | Estado |
-| Eventos | `SolicitudRecibida`, `SolicitudRetirada`, `MiembroEntra`, `MiembroSale`, `Ordenada`, `Rechazada`, `DirectoRecibido`, `ReservaCambia`, `PresenciaRecibida`, `BlobAvance`, `Desfasada`, `Superada`, `Desconectada`, `Reconectada`, `Cerrada` |
+| Eventos | `SolicitudRecibida`, `SolicitudRetirada`, `MiembroEntra`, `MiembroSale`, `MiembrosCambiaron`, `Ordenada`, `Rechazada`, `DirectoRecibido`, `ReservaCambia`, `PresenciaRecibida`, `BlobAvance`, `Desfasada`, `Superada`, `Desconectada`, `Reconectada`, `Cerrada` |
 
 `Identidad.CargarOCrear(archivo)` guarda la clave privada: en Windows cifrada con DPAPI del usuario actual; en Linux y macOS en un archivo 0600 (se rechaza si el grupo u otros pueden leerlo), sin llavero del sistema por ahora. Publica sin sobrescribir: si dos instancias la crean a la vez, las dos devuelven la que quedó guardada. Un archivo dañado da `SalaException` `identidad` y nunca se pisa.
 
@@ -305,6 +307,10 @@ string porQue = Textos.MotivoDeSalida("red");          // «Se cortó la conexi�
 - `ParaTelefono()`: texto corto y estable, de seis líneas como mucho, para leerlo en voz alta: camino, relé (el nombre del servidor de la URL, nunca una IP), ida y vuelta, pérdida, versiones propia y del otro, hace cuánto hubo actividad y el motivo de la última caída. Con las cuatro palabras de huella, no los 64 hex; sin rutas ni IP.
 - `Textos`: los avisos en español que comparten Rodaje y Unicomp (`Rele`, `Cortafuegos`, `RedSinUdp`, `MotivoDeSalida`, `ComoLeerElDiagnostico`), con el mismo fondo que `docs/internet.md`: qué ve el relé, el cortafuegos de Windows, redes que bloquean UDP y cómo leer el diagnóstico por teléfono. Las apps los muestran tal cual o los enlazan.
 - `SalaException.Codigo == "version"` lleva el texto de §3.1, listo para mostrar.
+- **Progreso de operaciones largas** (barra con porcentaje, «quedan N s», «último avance hace N s» y cancelar, `docs/progreso-operaciones.md` de Rodaje):
+  - Entrada y reconexión: `Sala.Fase` y `Sala.FaseCambia` (`FaseConexion`: `Buscando`, `Conectando` con `Sala.Intento` de 1 a 3, `EsperandoAprobacion` (hasta 10 min), `Sincronizando`, `Conectado`, `Desconectado`; el anfitrión siempre `Conectado`). `UnirseAsync(..., alEsperar: clave => …)` da la clave propia mientras espera. `Diagnostico.Fase` e `Intento` lo repiten. Cancelar la entrada es el `CancellationToken` de `UnirseAsync`.
+  - Descargas de blobs: `PedirBlobAsync(de, huella, tamano, destino, tope, progreso, ct)` (la sobrecarga sin `progreso` sigue) y el evento `Sala.BlobProgreso` dan `ProgresoBlob`: `De`, `Huella`, `Intento`, `Hecho`, `Total` (el tamaño exacto), `Fraccion`, `Inicio`, `UltimoAvance`, `BytesPorSegundo` (media desde el inicio), `Restante` (`null` sin datos para estimar o al terminar). Uno con `Hecho` 0 al empezar, otros como mucho 4 por segundo y uno con `Hecho == Total` al acabar bien. Cancelar es cancelar el `CancellationToken`: borra el temporal y lanza `OperationCanceledException`. `BlobAvance(huella, recibidos)` sigue como estaba.
+  - Lo que **no** hay: avance de lo que este equipo *sirve* a otro (solo bytes totales por par en `Diagnostico`); entra con la fase 4 (proxies), que es cuando se mandan blobs grandes.
 
 ## 6. Lo que pone cada app encima
 

@@ -4,12 +4,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iroh::endpoint::{Connection, IncomingAddr, RecvStream, SendStream, VarInt, presets};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, TransportAddr, Watcher};
+use n0_future::StreamExt;
 use rand::RngCore;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -18,6 +19,7 @@ use crate::billete::{self, Billete};
 use crate::hex;
 use crate::limites::{BYTES_SEGUNDO, Cubo, Cupos, Reserva};
 use crate::marco::{self, ErrorMarco};
+use crate::{diagnostico, version};
 
 pub const ALPN: &[u8] = b"dathinel/sala/1";
 const MAX_HOLA: usize = 4096;
@@ -44,13 +46,13 @@ pub(crate) mod cierre {
 }
 
 fn motivo(codigo: u64) -> &'static str {
-    match codigo as u32 {
-        cierre::EXPULSADO => "expulsado",
-        cierre::REVOCADO => "revocado",
-        cierre::RITMO => "ritmo",
-        cierre::MARCO => "marco",
-        cierre::REEMPLAZADA => "reemplazada",
-        cierre::TRASPASO => "traspaso",
+    match u32::try_from(codigo).ok() {
+        Some(cierre::EXPULSADO) => "expulsado",
+        Some(cierre::REVOCADO) => "revocado",
+        Some(cierre::RITMO) => "ritmo",
+        Some(cierre::MARCO) => "marco",
+        Some(cierre::REEMPLAZADA) => "reemplazada",
+        Some(cierre::TRASPASO) => "traspaso",
         _ => "cerro",
     }
 }
@@ -82,6 +84,32 @@ pub(crate) struct Par {
     tx: mpsc::UnboundedSender<Vec<u8>>,
     cola: Arc<AtomicUsize>,
     callada: Arc<AtomicBool>,
+    datos: Arc<DatosPar>,
+}
+
+struct DatosPar {
+    alias: Option<String>,
+    app_version: Option<String>,
+    protocolo: Option<u64>,
+    conectado_desde: u64,
+    ultima_actividad: AtomicU64,
+    cambios: AtomicU64,
+    cierre_local: AtomicU64,
+}
+
+impl DatosPar {
+    fn nuevo(alias: Option<String>, saludo: &Value) -> Self {
+        let en = ahora();
+        Self {
+            alias,
+            app_version: marco::texto(saludo, "appVersion").map(String::from),
+            protocolo: saludo.get("sala").and_then(Value::as_u64),
+            conectado_desde: en,
+            ultima_actividad: AtomicU64::new(en),
+            cambios: AtomicU64::new(0),
+            cierre_local: AtomicU64::new(0),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -92,6 +120,7 @@ pub(crate) struct Estado {
     pendientes: HashMap<EndpointId, (oneshot::Sender<Decision>, String)>,
     pub(crate) pares: HashMap<EndpointId, Par>,
     falsos: HashMap<String, VecDeque<Instant>>,
+    ultima_caida: Option<Value>,
 }
 
 pub struct Sala {
@@ -100,6 +129,12 @@ pub struct Sala {
     app: String,
     app_version: String,
     rele: Option<String>,
+    #[cfg(feature = "prueba")]
+    rele_inseguro: bool,
+    solo_rele: bool,
+    mdns: bool,
+    /// Fase de `unirse` y el intento de conexión en curso (api.md §2.3).
+    fase: Mutex<(&'static str, u32)>,
     pub(crate) carpeta: PathBuf,
     pub(crate) estado: Mutex<Estado>,
     pub(crate) blobs: Mutex<crate::blobs::Blobs>,
@@ -111,6 +146,8 @@ pub struct Sala {
 }
 
 static SALA: OnceLock<Mutex<Option<Arc<Sala>>>> = OnceLock::new();
+/// La sala del invitado mientras `unirse` espera (la conexión, la aprobación): `estado` ya puede decir la clave propia y la fase.
+static ENTRANDO: Mutex<Option<Arc<Sala>>> = Mutex::new(None);
 static ABRIENDO: AtomicBool = AtomicBool::new(false);
 
 fn ranura() -> &'static Mutex<Option<Arc<Sala>>> {
@@ -151,7 +188,10 @@ pub async fn llamar(funcion: &str, p: Value, cancelar: Arc<Notify>) -> Result<Va
         "expulsar" => actual()?.expulsar(&p),
         "enviar" => actual()?.enviar(&p),
         "recibir" => actual()?.recibir(&p, cancelar).await,
-        "estado" => Ok(actual()?.estado()),
+        "estado" => {
+            let sala = actual().or_else(|e| ENTRANDO.lock().unwrap().clone().ok_or(e))?;
+            Ok(sala.estado())
+        }
         "ascender" => actual()?.ascender(&p),
         "blob-ofrecer" => actual()?.blob_ofrecer(&p),
         "blob-retirar" => actual()?.blob_retirar(&p),
@@ -190,6 +230,17 @@ fn texto_corto(p: &Value, campo: &str) -> Result<String, Fallo> {
 
 /// `abrir-sala` (anfitrión) o `unirse` (invitado): crea el endpoint con la red pedida.
 async fn abrir(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<Value, Fallo> {
+    #[cfg(not(feature = "prueba"))]
+    if p.get("red")
+        .and_then(|r| r.get("releInseguro"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return fallo(
+            "invalid-parameters",
+            "«releInseguro» solo está disponible en una compilación con el feature prueba.",
+        );
+    }
     let existente = ranura().lock().unwrap().clone();
     if let Some(sala) = existente.filter(|s| !anfitrion && !s.es_anfitrion()) {
         if ABRIENDO.swap(true, Ordering::SeqCst) {
@@ -232,10 +283,28 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
     let red = p.get("red").cloned().unwrap_or(json!({}));
     let mdns = red.get("mdns").and_then(Value::as_bool).unwrap_or(false);
     let rele = marco::texto(&red, "rele").unwrap_or("n0").to_string();
+    let inseguro = red
+        .get("releInseguro")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    #[cfg(not(feature = "prueba"))]
+    if inseguro {
+        return fallo(
+            "invalid-parameters",
+            "«releInseguro» solo está disponible en una compilación con el feature prueba.",
+        );
+    }
     let mut b = match rele.as_str() {
         "n0" => Endpoint::builder(presets::N0),
         "ninguno" => Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled),
         url if url.starts_with("https://") => {
+            let u: RelayUrl = url
+                .parse()
+                .map_err(|_| Fallo("invalid-parameters", "URL de relé inválida.".into()))?;
+            Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Custom(u.into()))
+        }
+        #[cfg(feature = "prueba")]
+        url if inseguro && url.starts_with("http://") => {
             let u: RelayUrl = url
                 .parse()
                 .map_err(|_| Fallo("invalid-parameters", "URL de relé inválida.".into()))?;
@@ -248,11 +317,21 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
             );
         }
     };
-    if red
+    #[cfg(feature = "prueba")]
+    if inseguro {
+        if !rele.starts_with("https://") && !rele.starts_with("http://") {
+            return fallo(
+                "invalid-parameters",
+                "«releInseguro» necesita la URL https del relé de pruebas.",
+            );
+        }
+        b = b.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
+    }
+    let solo_rele = red
         .get("soloRele")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    if solo_rele {
         if rele == "ninguno" {
             return fallo("invalid-parameters", "«soloRele» necesita un relé.");
         }
@@ -265,16 +344,26 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
     }
     b = b.secret_key(secreta);
     b = b.alpns(vec![ALPN.to_vec()]);
-    let ep = b
-        .bind()
-        .await
-        .map_err(|e| Fallo("sin-conexion", format!("No se pudo abrir la red: {e}")))?;
+    let ep = b.bind().await.map_err(|_| {
+        Fallo(
+            "sin-conexion",
+            "No se pudo abrir la red. Comprueba la conexión y vuelve a intentarlo.".into(),
+        )
+    })?;
+    if anfitrion && rele != "ninguno" {
+        let _ = tokio::time::timeout(Duration::from_secs(5), ep.online()).await;
+    }
     let sala = Arc::new(Sala {
         ep,
         anfitrion: AtomicBool::new(anfitrion),
         app,
         app_version,
         rele: (rele != "ninguno").then_some(rele.clone()),
+        #[cfg(feature = "prueba")]
+        rele_inseguro: inseguro,
+        solo_rele,
+        mdns,
+        fase: Mutex::new(("listo", 0)),
         carpeta,
         estado: Mutex::default(),
         eventos: Mutex::default(),
@@ -302,13 +391,17 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
         }
         *ranura().lock().unwrap() = Some(sala.clone());
         tokio::spawn(sala.clone().aceptar_conexiones());
-        Ok(json!({"clave": hex::de_clave(&sala.ep.id()), "direcciones": sala.direcciones()}))
+        Ok(
+            json!({"clave": hex::de_clave(&sala.ep.id()), "direcciones": sala.direcciones(), "red":sala.red(None)}),
+        )
     } else {
         let alias = texto_corto(&p, "alias")?;
+        *ENTRANDO.lock().unwrap() = Some(sala.clone());
         let r = tokio::select! {
             r = sala.clone().entrar(&p, alias) => r,
             _ = cancelar.notified() => fallo("cancelled", "Cancelado."),
         };
+        *ENTRANDO.lock().unwrap() = None;
         match r {
             Ok(v) => {
                 *ranura().lock().unwrap() = Some(sala);
@@ -324,6 +417,9 @@ async fn abrir_una(p: Value, anfitrion: bool, cancelar: Arc<Notify>) -> Result<V
 
 impl Sala {
     fn direcciones(&self) -> Vec<String> {
+        if self.solo_rele {
+            return Vec::new();
+        }
         let mut d: Vec<String> = self.ep.addr().ip_addrs().map(|a| a.to_string()).collect();
         // Para dos procesos del mismo equipo (pruebas y dos instancias en un PC).
         for s in self.ep.bound_sockets() {
@@ -337,6 +433,36 @@ impl Sala {
             }
         }
         d
+    }
+
+    fn conexion(&self) -> Value {
+        let (fase, intento) = *self.fase.lock().unwrap();
+        json!({"fase": fase, "intento": intento})
+    }
+
+    fn rele_de_casa(&self) -> Option<String> {
+        self.rele.as_ref()?;
+        self.ep
+            .home_relay_status()
+            .get()
+            .iter()
+            .find(|r| r.is_connected())
+            .map(|r| r.url().to_string())
+    }
+
+    /// `de_pares`: el relé de un camino elegido, para el invitado que ya habla por un relé aunque su relé de casa aún no haya contestado.
+    fn red(&self, de_pares: Option<String>) -> Value {
+        let url = self
+            .rele_de_casa()
+            .or_else(|| de_pares.filter(|_| self.rele.is_some()));
+        let conectado = url.is_some();
+        diagnostico::red(
+            self.rele.as_deref().unwrap_or("ninguno"),
+            url,
+            conectado,
+            self.solo_rele,
+            self.mdns,
+        )
     }
 
     pub(crate) fn es_anfitrion(&self) -> bool {
@@ -369,20 +495,18 @@ impl Sala {
                 uso: Uso::Libre,
             },
         );
+        let rele = self.rele_de_casa();
+        let rele_conectado = rele.is_some();
         let b = Billete {
             app: self.app.clone(),
             anfitrion: hex::de_clave(&self.ep.id()),
-            rele: self
-                .rele
-                .as_ref()
-                .filter(|r| r.starts_with("https://"))
-                .cloned(),
+            rele,
             direcciones: self.direcciones(),
             id: id.clone(),
             secreto: hex::codificar(&secreto),
             caduca,
         };
-        Ok(json!({"billete": b.codificar(), "id": id}))
+        Ok(json!({"billete": b.codificar(), "id": id,"releConectado":rele_conectado}))
     }
 
     fn revocar(&self, p: &Value) -> Result<Value, Fallo> {
@@ -440,8 +564,11 @@ impl Sala {
             e.anclados.remove(&k);
             e.vetados.insert(k);
         }
-        match e.pares.remove(&k) {
+        match e.pares.get(&k) {
             Some(par) => {
+                par.datos
+                    .cierre_local
+                    .store(u64::from(cierre::EXPULSADO), Ordering::Relaxed);
                 par.conn
                     .close(VarInt::from_u32(cierre::EXPULSADO), b"expulsado");
                 Ok(Value::Null)
@@ -547,17 +674,44 @@ impl Sala {
 
     fn estado(&self) -> Value {
         let e = self.estado.lock().unwrap();
-        let pares: Vec<Value> = e
+        let mut de_pares = None;
+        let pares: Vec<diagnostico::Par> = e
             .pares
             .iter()
             .map(|(k, par)| {
-                let (via, rtt) = via(&par.conn);
+                let (via, rele, rtt) = camino(&par.conn);
+                if de_pares.is_none() {
+                    de_pares.clone_from(&rele);
+                }
                 let stats = par.conn.stats();
-                json!({"clave": hex::de_clave(k), "via": via, "rttMs": rtt,
-                    "enviadosB": stats.udp_tx.bytes, "recibidosB": stats.udp_rx.bytes})
+                diagnostico::Par {
+                    clave: hex::de_clave(k),
+                    alias: par.datos.alias.clone(),
+                    via,
+                    rele,
+                    rtt_ms: rtt,
+                    perdidos_pct: diagnostico::perdidos_pct(stats.sent_packets, stats.lost_packets),
+                    paquetes_enviados: stats.sent_packets,
+                    paquetes_perdidos: stats.lost_packets,
+                    enviados_b: stats.udp_tx.bytes,
+                    recibidos_b: stats.udp_rx.bytes,
+                    app_version: par.datos.app_version.clone(),
+                    protocolo: par.datos.protocolo,
+                    conectado_desde: par.datos.conectado_desde,
+                    ultima_actividad: par.datos.ultima_actividad.load(Ordering::Relaxed),
+                    cambios_de_camino: par.datos.cambios.load(Ordering::Relaxed),
+                }
             })
             .collect();
-        json!({"clave": hex::de_clave(&self.ep.id()), "direcciones": self.direcciones(), "rol": if self.es_anfitrion() {"anfitrion"} else {"invitado"}, "pares": pares})
+        diagnostico::estado(
+            hex::de_clave(&self.ep.id()),
+            self.direcciones(),
+            self.es_anfitrion(),
+            self.red(de_pares),
+            self.conexion(),
+            pares,
+            e.ultima_caida.clone(),
+        )
     }
 
     /// El invitado pasa a anfitrión con el mismo endpoint (mismas direcciones): traspaso o suplente (api.md §5.6).
@@ -653,7 +807,7 @@ impl Sala {
 
     async fn saludo_entrante(self: Arc<Self>, conn: Connection, origen: String) {
         let quien = conn.remote_id();
-        let adios = |motivo: &str, detalle: String| json!({"type":"adios","motivo":motivo,"detalle":detalle});
+        let adios = |motivo: &str, detalle: String| json!({"type":"adios","motivo":motivo,"detalle":detalle,"appVersion":self.app_version,"sala":1});
         let Ok(Ok((mut envio, mut recibo))) =
             tokio::time::timeout(ESPERA_HOLA, conn.accept_bi()).await
         else {
@@ -676,17 +830,22 @@ impl Sala {
                 return;
             }
         };
-        let rechazo = if hola.get("sala").and_then(Value::as_i64) != Some(1) {
+        let hola_recibido = ahora();
+        let rechazo = if marco::texto(&hola, "app") != Some(self.app.as_str()) {
             Some(adios(
                 "version",
-                "Esta sala habla la versión 1 del protocolo de sala.".into(),
+                format!("Esta sala es de {}.", version::nombre(&self.app)),
             ))
-        } else if marco::texto(&hola, "app") != Some(self.app.as_str()) {
-            Some(adios("version", format!("Esta sala es de {}.", self.app)))
-        } else if marco::texto(&hola, "appVersion") != Some(self.app_version.as_str()) {
+        } else if marco::texto(&hola, "appVersion") != Some(self.app_version.as_str())
+            || hola.get("sala").and_then(Value::as_u64) != Some(1)
+        {
             Some(adios(
                 "version",
-                format!("El anfitrión usa la versión {}.", self.app_version),
+                version::detalle(
+                    &self.app,
+                    marco::texto(&hola, "appVersion").unwrap_or("desconocida"),
+                    &self.app_version,
+                ),
             ))
         } else if self.estado.lock().unwrap().vetados.contains(&quien) {
             Some(adios("rechazado", "Esta sala no te deja entrar.".into()))
@@ -703,6 +862,7 @@ impl Sala {
             .take(40)
             .collect();
 
+        let mut espera_aprobacion = Duration::ZERO;
         let anclado = self.estado.lock().unwrap().anclados.contains(&quien);
         if !anclado {
             // Comprobar e insertar, incluido el evento, bajo el mismo cerrojo.
@@ -711,7 +871,7 @@ impl Sala {
                 let r = e.solicitar(&hola, quien);
                 if let Ok((id, _)) = &r {
                     self.evento(json!({"tipo":"solicitud","clave":hex::de_clave(&quien),
-                        "alias":alias,"appVersion":self.app_version,"billete":id}));
+                        "alias":alias,"appVersion":marco::texto(&hola,"appVersion"),"billete":id}));
                 }
                 r
             };
@@ -724,9 +884,11 @@ impl Sala {
                     return despedir(conn, &mut envio, &adios(motivo, String::new())).await;
                 }
             };
+            let inicio_espera = Instant::now();
             let decision = self
                 .esperar_aprobacion(quien, rx, &conn, &mut recibo, ESPERA_APROBACION)
                 .await;
+            espera_aprobacion = inicio_espera.elapsed();
             match decision {
                 Decision::Aceptar => {}
                 Decision::Rechazar => {
@@ -755,7 +917,8 @@ impl Sala {
             .await;
         };
         if envio
-            .write_all(&marco::armar(&json!({"type":"admitido"})))
+            // Extensión interna: permite descontar solo la aprobación, sin descontar el saludo ni los RTT.
+            .write_all(&marco::armar(&json!({"type":"admitido","appVersion":self.app_version,"sala":1,"esperaAprobacionMs":espera_aprobacion.as_millis() as u64})))
             .await
             .is_err()
         {
@@ -763,7 +926,11 @@ impl Sala {
         }
         let (via, _) = via(&conn);
         self.evento(json!({"tipo":"entra","clave":hex::de_clave(&quien),"alias":alias,"via":via}));
-        self.registrar(conn, envio, recibo, reserva);
+        let datos = DatosPar::nuevo(Some(alias), &hola);
+        datos
+            .ultima_actividad
+            .store(hola_recibido, Ordering::Relaxed);
+        self.registrar(conn, envio, recibo, reserva, datos);
     }
 
     async fn esperar_aprobacion(
@@ -804,7 +971,12 @@ impl Sala {
 
     // ---------- invitado: entrar ----------
 
+    fn poner_fase(&self, fase: &'static str, intento: u32) {
+        *self.fase.lock().unwrap() = (fase, intento);
+    }
+
     async fn entrar(self: Arc<Self>, p: &Value, alias: String) -> Result<Value, Fallo> {
+        self.poner_fase("buscando", 0);
         let (destino, billete_id, secreto) = if let Some(t) = marco::texto(p, "billete") {
             let b = Billete::decodificar(t)
                 .ok_or(Fallo("billete-invalido", "El enlace no es válido.".into()))?;
@@ -815,9 +987,14 @@ impl Sala {
                 return fallo("billete-invalido", "El enlace caducó.");
             }
             let addr = direccion(
-                hex::clave(&b.anfitrion).unwrap(),
+                hex::clave(&b.anfitrion).ok_or(Fallo(
+                    "billete-invalido",
+                    "La clave del anfitrión no es válida.".into(),
+                ))?,
                 b.rele.as_deref(),
                 &b.direcciones,
+                #[cfg(feature = "prueba")]
+                self.rele_inseguro,
             )?;
             (addr, Some(b.id), Some(b.secreto))
         } else {
@@ -832,31 +1009,43 @@ impl Sala {
                 })
                 .unwrap_or_default();
             (
-                direccion(k, marco::texto(p, "rele").or(self.rele.as_deref()), &dirs)?,
+                direccion(
+                    k,
+                    marco::texto(p, "rele").or(self.rele.as_deref()),
+                    &dirs,
+                    #[cfg(feature = "prueba")]
+                    self.rele_inseguro,
+                )?,
                 None,
                 None,
             )
         };
         let anfitrion = destino.id;
         let dirs_anfitrion: Vec<String> = destino.ip_addrs().map(|a| a.to_string()).collect();
-        let conn = tokio::time::timeout(Duration::from_secs(10), self.ep.connect(destino, ALPN))
+        let inicio = Instant::now();
+        let mut intentos = 0;
+        let conn = loop {
+            intentos += 1;
+            self.poner_fase("conectando", intentos);
+            if let Ok(Ok(conn)) = tokio::time::timeout(
+                Duration::from_secs(15),
+                self.ep.connect(destino.clone(), ALPN),
+            )
             .await
-            .map_err(|_| {
-                Fallo(
+            {
+                break conn;
+            }
+            if intentos == 3 {
+                return fallo(
                     "sin-conexion",
-                    "No se encontró al anfitrión en 10 s.".into(),
-                )
-            })?
-            .map_err(|e| {
-                Fallo(
-                    "sin-conexion",
-                    format!("No se pudo conectar con el anfitrión: {e}"),
-                )
-            })?;
-        let (mut envio, mut recibo) = conn
-            .open_bi()
-            .await
-            .map_err(|e| Fallo("sin-conexion", e.to_string()))?;
+                    "No se pudo conectar con el anfitrión tras 3 intentos. Comprueba la red y pide un enlace nuevo.",
+                );
+            }
+            // La selección exterior de cancelación también interrumpe esta espera y cada connect.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
+        let mut guardia = ConexionEntrante(Some(conn.clone()));
+        let (mut envio, mut recibo) = conn.open_bi().await.map_err(|_| cierre_sin_adios(&conn))?;
         let mut hola = json!({"type":"hola","sala":1,"app":self.app,"appVersion":self.app_version,"alias":alias});
         if let (Some(id), Some(s)) = (billete_id, secreto) {
             hola["billete"] = json!(id);
@@ -865,7 +1054,8 @@ impl Sala {
         envio
             .write_all(&marco::armar(&hola))
             .await
-            .map_err(|e| Fallo("sin-conexion", e.to_string()))?;
+            .map_err(|_| cierre_sin_adios(&conn))?;
+        self.poner_fase("esperando-aprobacion", intentos);
         let r = tokio::time::timeout(
             ESPERA_APROBACION + ESPERA_HOLA,
             marco::leer(&mut recibo, MAX_HOLA, marco::MAX_PROFUNDIDAD_PAR),
@@ -874,26 +1064,39 @@ impl Sala {
         .map_err(|_| Fallo("rechazado", "El anfitrión no respondió.".into()))?;
         let r = match r {
             Ok(r) => r,
-            Err(_) => {
-                let m = conn
-                    .close_reason()
-                    .map(|c| c.to_string())
-                    .unwrap_or_default();
-                return fallo(
-                    "rechazado",
-                    format!("El anfitrión cerró sin responder. {m}"),
-                );
-            }
+            Err(_) => return Err(cierre_sin_adios(&conn)),
         };
         match marco::texto(&r, "type") {
             Some("admitido") => {
-                let (via, _) = via(&conn);
+                self.poner_fase("sincronizando", intentos);
+                if r.get("appVersion")
+                    .is_some_and(|v| v.as_str() != Some(self.app_version.as_str()))
+                    || r.get("sala").is_some_and(|v| v.as_u64() != Some(1))
+                {
+                    return fallo(
+                        "version",
+                        version::detalle(
+                            &self.app,
+                            &self.app_version,
+                            marco::texto(&r, "appVersion").unwrap_or("desconocida"),
+                        ),
+                    );
+                }
+                let (via, rele, _) = camino(&conn);
+                let conexion_ms = (inicio.elapsed().as_millis() as u64).saturating_sub(
+                    r.get("esperaAprobacionMs")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                );
+                let anfitrion_version = marco::texto(&r, "appVersion").map(String::from);
                 let reserva = self
                     .conexiones
                     .reservar(anfitrion, MAX_CONEXIONES, MAX_CONEXIONES)
                     .ok_or(Fallo("ocupado", "No hay cupos de conexión.".into()))?;
-                self.registrar(conn, envio, recibo, reserva);
+                self.registrar(conn, envio, recibo, reserva, DatosPar::nuevo(None, &r));
+                guardia.0 = None;
                 Ok(json!({"anfitrion": hex::de_clave(&anfitrion), "via": via,
+                    "anfitrionVersion":anfitrion_version,"rele":rele,"conexionMs":conexion_ms,"intentos":intentos,
                     "anfitrionDirecciones": dirs_anfitrion, "direcciones": self.direcciones()}))
             }
             Some("adios") => {
@@ -907,6 +1110,7 @@ impl Sala {
                 fallo(
                     code,
                     marco::texto(&r, "detalle")
+                        .filter(|d| !d.is_empty())
                         .unwrap_or("El anfitrión no te dejó entrar.")
                         .to_string(),
                 )
@@ -923,11 +1127,13 @@ impl Sala {
         mut envio: SendStream,
         mut recibo: RecvStream,
         reserva: Reserva,
+        datos: DatosPar,
     ) {
         let quien = conn.remote_id();
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let cola = Arc::new(AtomicUsize::new(0));
         let callada = Arc::new(AtomicBool::new(false));
+        let datos = Arc::new(datos);
         let viejo = {
             let mut e = self.estado.lock().unwrap();
             if e.vetados.contains(&quien) {
@@ -942,6 +1148,7 @@ impl Sala {
                     tx,
                     cola: cola.clone(),
                     callada: callada.clone(),
+                    datos: datos.clone(),
                 },
             )
         };
@@ -963,6 +1170,26 @@ impl Sala {
 
         tokio::spawn(crate::blobs::servir(self.clone(), conn.clone()));
 
+        let observada = conn.clone();
+        let contadores = datos.clone();
+        // Se toma antes de lanzar la tarea para no perder el estado inicial.
+        let inicial = seleccion_rele(&conn.paths());
+        tokio::spawn(async move {
+            let mut anterior = inicial;
+            let mut caminos = observada.paths_stream();
+            loop {
+                tokio::select! {
+                    _ = observada.closed() => break,
+                    lista = caminos.next() => {
+                        let Some(lista) = lista else { break };
+                        if cambio_de_camino(&mut anterior,seleccion_rele(&lista)) {
+                            contadores.cambios.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+        });
+
         let sala = self.clone();
         tokio::spawn(async move {
             let clave = hex::de_clave(&quien);
@@ -972,6 +1199,17 @@ impl Sala {
             let cierre_propio = loop {
                 match marco::leer_limitado(&mut recibo, &mut bytes).await {
                     Ok(datos) => {
+                        // Cada marco válido, incluida presencia, renueva la actividad.
+                        if let Some(par) = sala
+                            .estado
+                            .lock()
+                            .unwrap()
+                            .pares
+                            .get(&quien)
+                            .filter(|p| p.conn.stable_id() == conn.stable_id())
+                        {
+                            par.datos.ultima_actividad.store(ahora(), Ordering::Relaxed);
+                        }
                         if marcos.tomar(1, Instant::now()).is_err() {
                             break Some(cierre::RITMO);
                         }
@@ -999,13 +1237,17 @@ impl Sala {
                 None => {}
             }
             let razon = conn.closed().await;
-            let codigo = cierre_propio.map(u64::from).or_else(|| match &razon {
-                iroh::endpoint::ConnectionError::ApplicationClosed(a) => {
-                    Some(a.error_code.into_inner())
-                }
-                iroh::endpoint::ConnectionError::LocallyClosed => Some(cierre::CERRO as u64),
-                _ => None,
-            });
+            let local = datos.cierre_local.load(Ordering::Relaxed);
+            let codigo = (local != 0)
+                .then_some(local)
+                .or(cierre_propio.map(u64::from))
+                .or_else(|| match &razon {
+                    iroh::endpoint::ConnectionError::ApplicationClosed(a) => {
+                        Some(a.error_code.into_inner())
+                    }
+                    iroh::endpoint::ConnectionError::LocallyClosed => Some(cierre::CERRO as u64),
+                    _ => None,
+                });
             let mot = codigo.map(motivo).unwrap_or("red");
             let reemplazada = codigo == Some(cierre::REEMPLAZADA as u64);
             {
@@ -1018,6 +1260,8 @@ impl Sala {
                 }
             }
             if !reemplazada && !callada.load(Ordering::SeqCst) {
+                sala.estado.lock().unwrap().ultima_caida =
+                    Some(json!({"clave":clave,"motivo":mot,"en":ahora()}));
                 sala.evento(json!({"tipo":"sale","clave":clave,"motivo":mot}));
                 if !sala.es_anfitrion() {
                     let m = if mot == "cerro" {
@@ -1040,8 +1284,29 @@ async fn despedir(conn: Connection, envio: &mut SendStream, adios: &Value) {
     conn.close(VarInt::from_u32(cierre::SALUDO), b"adios");
 }
 
-fn direccion(id: EndpointId, rele: Option<&str>, dirs: &[String]) -> Result<EndpointAddr, Fallo> {
+fn direccion(
+    id: EndpointId,
+    rele: Option<&str>,
+    dirs: &[String],
+    #[cfg(feature = "prueba")] inseguro: bool,
+) -> Result<EndpointAddr, Fallo> {
     let mut a = EndpointAddr::new(id);
+    #[cfg(feature = "prueba")]
+    let rele = if let Some(r) = rele.filter(|r| r.starts_with("http://")) {
+        if !inseguro {
+            return fallo(
+                "invalid-parameters",
+                "«rele» tiene que ser n0, ninguno o una URL https.",
+            );
+        }
+        a = a.with_relay_url(
+            r.parse()
+                .map_err(|_| Fallo("billete-invalido", "Relé inválido.".into()))?,
+        );
+        None
+    } else {
+        rele
+    };
     if let Some(r) = rele.filter(|r| r.starts_with("https://")) {
         a = a.with_relay_url(
             r.parse()
@@ -1058,16 +1323,102 @@ fn direccion(id: EndpointId, rele: Option<&str>, dirs: &[String]) -> Result<Endp
 }
 
 fn via(conn: &Connection) -> (&'static str, u64) {
+    let (via, _, rtt) = camino(conn);
+    (via.unwrap_or("directo"), rtt.unwrap_or(0))
+}
+
+fn seleccion_rele(paths: &iroh::endpoint::PathList<'_>) -> Option<bool> {
+    paths.iter().find(|p| p.is_selected()).map(|p| p.is_relay())
+}
+
+fn cambio_de_camino(anterior: &mut Option<bool>, nuevo: Option<bool>) -> bool {
+    let Some(nuevo) = nuevo else { return false };
+    let cambio = anterior.is_some_and(|a| a != nuevo);
+    *anterior = Some(nuevo);
+    cambio
+}
+
+fn camino(conn: &Connection) -> (Option<&'static str>, Option<String>, Option<u64>) {
     let paths = conn.paths();
     for p in paths.iter() {
         if p.is_selected() {
+            let rtt = p.rtt();
             return (
-                if p.is_relay() { "rele" } else { "directo" },
-                p.rtt().as_millis() as u64,
+                Some(if p.is_relay() { "rele" } else { "directo" }),
+                match p.remote_addr() {
+                    TransportAddr::Relay(url) => Some(url.to_string()),
+                    _ => None,
+                },
+                (!rtt.is_zero()).then_some(rtt.as_millis() as u64),
             );
         }
     }
-    ("directo", 0)
+    (None, None, None)
+}
+
+/// Cierra también si se cancela un saludo o una reconexión sin destruir el endpoint.
+struct ConexionEntrante(Option<Connection>);
+impl Drop for ConexionEntrante {
+    fn drop(&mut self) {
+        if let Some(conn) = self.0.take() {
+            conn.close(VarInt::from_u32(cierre::SALUDO), b"saludo terminado");
+        }
+    }
+}
+
+fn cierre_sin_adios(conn: &Connection) -> Fallo {
+    use iroh::endpoint::ConnectionError;
+    let (codigo, detalle) = match conn.close_reason() {
+        Some(ConnectionError::ApplicationClosed(a))
+            if a.error_code.into_inner() == u64::from(cierre::SALUDO) =>
+        {
+            (
+                "version",
+                "El anfitrión cerró durante el saludo sin enviar su versión. Comprueba que ambos usan la misma versión de la app y del protocolo de Sala.",
+            )
+        }
+        Some(ConnectionError::ApplicationClosed(a)) => {
+            match u32::try_from(a.error_code.into_inner()).ok() {
+                Some(cierre::EXPULSADO) => (
+                    "rechazado",
+                    "El anfitrión te expulsó de la sala. Pídele una nueva invitación.",
+                ),
+                Some(cierre::MARCO) => (
+                    "rechazado",
+                    "El anfitrión cerró porque recibió un marco inválido. Comprueba las versiones de ambas apps.",
+                ),
+                Some(cierre::RITMO) => (
+                    "rechazado",
+                    "El anfitrión cerró por exceso de mensajes. Espera y vuelve a intentarlo.",
+                ),
+                _ => (
+                    "rechazado",
+                    "El anfitrión cerró la conexión sin admitirte. Comprueba las versiones y pide una nueva invitación.",
+                ),
+            }
+        }
+        Some(ConnectionError::TimedOut) => (
+            "rechazado",
+            "Se agotó el tiempo de conexión con el anfitrión. Comprueba la red y vuelve a intentarlo.",
+        ),
+        Some(ConnectionError::VersionMismatch) => (
+            "version",
+            "El anfitrión usa otra versión del transporte. Actualizad ambas apps y vuelve a intentarlo.",
+        ),
+        Some(ConnectionError::TransportError(_) | ConnectionError::ConnectionClosed(_)) => (
+            "rechazado",
+            "El transporte del anfitrión cerró por un error del protocolo. Comprueba las versiones de ambas apps y vuelve a intentarlo.",
+        ),
+        Some(ConnectionError::Reset) => (
+            "rechazado",
+            "El anfitrión reinició o perdió la conexión. Pide que vuelva a abrir la sala e inténtalo otra vez.",
+        ),
+        _ => (
+            "rechazado",
+            "La conexión se interrumpió antes de la admisión. Comprueba la red y que ambas apps usen la misma versión.",
+        ),
+    };
+    Fallo(codigo, detalle.into())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1131,8 +1482,104 @@ impl Estado {
 mod pruebas {
     use super::*;
 
+    #[test]
+    fn cuenta_transiciones_del_camino_elegido_sin_contar_ausencias() {
+        let mut anterior = None;
+        let mut cambios = 0;
+        for (nuevo, total) in [
+            (None, 0),
+            (Some(false), 0),
+            (Some(false), 0),
+            (None, 0),
+            (Some(true), 1),
+            (Some(true), 1),
+            (None, 1),
+            (Some(false), 2),
+        ] {
+            cambios += u64::from(cambio_de_camino(&mut anterior, nuevo));
+            assert_eq!(cambios, total);
+        }
+    }
+
+    #[test]
+    fn metadatos_salen_del_saludo_del_par() {
+        let saludo = json!({"appVersion":"1.0.4","sala":1});
+        let datos = DatosPar::nuevo(Some("Luis".into()), &saludo);
+        assert_eq!(datos.alias.as_deref(), Some("Luis"));
+        assert_eq!(datos.app_version.as_deref(), Some("1.0.4"));
+        assert_eq!(datos.protocolo, Some(1));
+        assert_eq!(
+            datos.ultima_actividad.load(Ordering::Relaxed),
+            datos.conectado_desde
+        );
+        assert_eq!(datos.cambios.load(Ordering::Relaxed), 0);
+        let antiguo = DatosPar::nuevo(None, &json!({}));
+        assert!(antiguo.alias.is_none());
+        assert!(antiguo.app_version.is_none());
+        assert!(antiguo.protocolo.is_none());
+    }
+
+    #[cfg(not(feature = "prueba"))]
+    #[tokio::test]
+    async fn compilacion_normal_rechaza_rele_inseguro_antes_de_abrir() {
+        let fallo = abrir(
+            json!({"red":{"releInseguro":true}}),
+            true,
+            Arc::new(Notify::new()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(fallo.0, "invalid-parameters");
+        assert!(fallo.1.contains("feature prueba"));
+    }
+
     fn clave(n: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[n; 32]).public()
+    }
+
+    #[cfg(feature = "prueba")]
+    #[tokio::test]
+    async fn http_sin_rele_inseguro_conserva_el_error() {
+        let error = abrir_una(
+            json!({
+                "identidad":hex::codificar(&[7; 32]),
+                "app":"prueba",
+                "appVersion":"1",
+                "carpeta":std::env::current_dir().expect("carpeta de pruebas"),
+                "red":{"rele":"http://127.0.0.1:12345"}
+            }),
+            true,
+            Arc::new(Notify::new()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.0, "invalid-parameters");
+        assert_eq!(error.1, "«rele» tiene que ser n0, ninguno o una URL https.");
+    }
+
+    #[cfg(feature = "prueba")]
+    #[test]
+    fn billete_http_necesita_rele_inseguro_en_el_invitado() {
+        let b = Billete {
+            app: "prueba".into(),
+            anfitrion: hex::de_clave(&clave(7)),
+            rele: Some("http://127.0.0.1:12345".into()),
+            direcciones: Vec::new(),
+            id: "0123456789abcdef".into(),
+            secreto: hex::codificar(&[9; 32]),
+            caduca: u64::MAX,
+        };
+        let b = Billete::decodificar(&b.codificar()).expect("billete HTTP");
+        let id = hex::clave(&b.anfitrion).expect("clave anfitrión");
+        let direccion_http =
+            direccion(id, b.rele.as_deref(), &b.direcciones, true).expect("dirección de prueba");
+        assert_eq!(
+            direccion_http.relay_urls().next().map(|u| u.scheme()),
+            Some("http")
+        );
+        let error = direccion(id, b.rele.as_deref(), &b.direcciones, false).unwrap_err();
+        assert_eq!(error.0, "invalid-parameters");
+        assert_eq!(error.1, "«rele» tiene que ser n0, ninguno o una URL https.");
     }
 
     fn estado_con_billete(un_uso: bool) -> (Estado, String) {
