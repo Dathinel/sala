@@ -1540,8 +1540,8 @@ mod pruebas {
         };
         let b = Billete::decodificar(&b.codificar()).expect("billete HTTP");
         let id = hex::clave(&b.anfitrion).expect("clave anfitrión");
-        let direccion_http = direccion(id, b.rele.as_deref(), &b.direcciones, true)
-            .expect("dirección de prueba");
+        let direccion_http =
+            direccion(id, b.rele.as_deref(), &b.direcciones, true).expect("dirección de prueba");
         assert_eq!(
             direccion_http.relay_urls().next().map(|u| u.scheme()),
             Some("http")

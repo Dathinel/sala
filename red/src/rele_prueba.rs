@@ -298,7 +298,12 @@ mod pruebas {
             stx.write_all(MARCADOR).await.expect("eco secreto");
             rx.read_exact(&mut recibido).await.expect("eco recibido");
             assert_eq!(recibido, MARCADOR);
-            assert!(cliente.paths().iter().any(|p| p.is_selected() && p.is_relay()));
+            assert!(
+                cliente
+                    .paths()
+                    .iter()
+                    .any(|p| p.is_selected() && p.is_relay())
+            );
             assert!(
                 servidor
                     .paths()
@@ -339,12 +344,10 @@ mod pruebas {
                 .expect("proxy");
             assert_eq!(std::fs::read(&archivo.0).expect("truncado"), b"");
             let url: iroh::RelayUrl = proxy.url.parse().expect("URL proxy");
-            let mut cliente = TcpStream::connect((
-                std::net::Ipv4Addr::LOCALHOST,
-                url.port().expect("puerto"),
-            ))
-            .await
-            .expect("cliente");
+            let mut cliente =
+                TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, url.port().expect("puerto")))
+                    .await
+                    .expect("cliente");
             let (mut servidor, _) = destino.accept().await.expect("servidor");
             cliente.write_all(b"ida").await.expect("ida");
             let mut buffer = [0; 3];
