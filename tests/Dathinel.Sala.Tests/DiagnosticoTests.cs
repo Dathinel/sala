@@ -11,14 +11,14 @@ public sealed class DiagnosticoTests
     private static Diagnostico Leer(string json, string rele = "n0", string version = "1.0.4", Caida? local = null) =>
         Diagnostico.Leer(Json(json), version, rele, esAnfitrion: false, reconexiones: 2, conexionMs: 850, ultimaReconexion: null, caidaLocal: local);
 
-    private const string PorRele = $$"""
+    private static readonly string PorRele = """
         {"clave":"{{Clave}}","direcciones":[],"rol":"invitado",
          "red":{"rele":"n0","releUrl":"https://euw1-1.relay.n0.iroh.link./","releConectado":true,"soloRele":true,"mdns":false},
          "pares":[{"clave":"{{Clave}}","alias":"Luis","via":"rele","rele":"https://euw1-1.relay.n0.iroh.link./",
            "rttMs":118,"perdidosPct":0.4,"paquetesEnviados":5120,"paquetesPerdidos":21,"enviadosB":1048576,"recibidosB":524288,
            "appVersion":"1.0.4","protocolo":1,"conectadoDesde":1763400000,"ultimaActividad":1763400198,"cambiosDeCamino":1}],
          "ultimaCaida":{"clave":"{{Clave}}","motivo":"red","en":1763399900}}
-        """;
+        """.Replace("{{Clave}}", Clave);
 
     [Fact]
     public void Lee_el_estado_completo()
@@ -43,7 +43,7 @@ public sealed class DiagnosticoTests
     [Fact]
     public void Lo_que_falta_o_viene_mal_queda_en_null_y_no_tumba_nada()
     {
-        Diagnostico d = Leer($$"""{"clave":"{{Clave}}","red":{"releUrl":7},"pares":[{"clave":"{{Clave}}","via":"otro","rttMs":"x","perdidosPct":null,"ultimaActividad":-5},{"alias":"sin clave"},5],"ultimaCaida":{"motivo":"red"}}""");
+        Diagnostico d = Leer("""{"clave":"CLAVE","red":{"releUrl":7},"pares":[{"clave":"CLAVE","via":"otro","rttMs":"x","perdidosPct":null,"ultimaActividad":-5},{"alias":"sin clave"},5],"ultimaCaida":{"motivo":"red"}}""".Replace("CLAVE", Clave));
         DiagnosticoPar p = Assert.Single(d.Pares);
         Assert.Equal(Camino.Desconocido, p.Camino);
         Assert.Null(p.Rtt);
@@ -89,7 +89,7 @@ public sealed class DiagnosticoTests
     [Fact]
     public void Directo_sin_medidas_y_sin_caida()
     {
-        string ficha = Leer($$"""{"clave":"{{Clave}}","red":{"rele":"n0","releConectado":true},"pares":[{"clave":"{{Clave}}","alias":"","via":"directo","appVersion":"1.0.3"}]}""").ParaTelefono(Ahora);
+        string ficha = Leer("""{"clave":"CLAVE","red":{"rele":"n0","releConectado":true},"pares":[{"clave":"CLAVE","alias":"","via":"directo","appVersion":"1.0.3"}]}""".Replace("CLAVE", Clave)).ParaTelefono(Ahora);
         Assert.StartsWith("Camino: directo\nIda y vuelta: sin medir\nPérdida: sin datos\nVersión: tuya 1.0.4 · de ", ficha);
         Assert.Contains("1.0.3 (distintas)", ficha);
         Assert.EndsWith("Actividad: ninguna todavía\nÚltima caída: ninguna", ficha);
