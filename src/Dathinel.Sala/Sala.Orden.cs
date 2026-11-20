@@ -390,6 +390,7 @@ public sealed partial class Sala
     {
         JsonObject m = new() { ["type"] = "miembros" };
         lock (_cerrojo) PonerMiembros(m);
+        MiembrosCambiaron?.Invoke();
         await IntentarAsync(MandarAsync(m, null, _fin.Token)).ConfigureAwait(false);
     }
 

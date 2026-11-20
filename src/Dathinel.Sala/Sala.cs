@@ -61,6 +61,8 @@ public sealed partial class Sala : IAsyncDisposable
 
     public event Action<Solicitud>? SolicitudRecibida;
     public event Action<Miembro>? MiembroEntra;
+    /// <summary>La lista de miembros, un rol o el suplente cambiaron (el invitado aplicó una lista del anfitrión; el anfitrión difundió la suya).</summary>
+    public event Action? MiembrosCambiaron;
     public event Action<string, string>? MiembroSale;
     public event Action<Ordenado>? Ordenada;
     public event Action<Rechazo>? Rechazada;
@@ -94,7 +96,7 @@ public sealed partial class Sala : IAsyncDisposable
             p["anclados"] = new JsonArray([.. lista.Select(m => (JsonNode)m.Clave)]);
             JsonElement r = await red.LlamarAsync("abrir-sala", p, ct).ConfigureAwait(false);
             s.Clave = r.GetProperty("clave").GetString()!;
-            s.Direcciones = Textos(r.GetProperty("direcciones"));
+            s.Direcciones = Cadenas(r.GetProperty("direcciones"));
             s._anfitrion = s.Clave;
             foreach (Miembro m in lista) s._miembros[m.Clave] = m;
             s._miembros[s.Clave] = new Miembro(s.Clave, opciones.Alias, Rol.Editar);
@@ -116,7 +118,7 @@ public sealed partial class Sala : IAsyncDisposable
     public static async Task<Sala> UnirseAsync(string identidad, OpcionesSala opciones, string? billete = null,
         string? anfitrion = null, IEnumerable<string>? direcciones = null, long epoca = 0, long ultimoSeq = 0,
         Action<Sala>? suscribir = null, Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>? validar = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default, Action<string>? alEsperar = null)
     {
         Comprobar(opciones);
         ProcesoRed red = await ProcesoRed.AbrirAsync(opciones.Ejecutable, ct).ConfigureAwait(false);
@@ -125,7 +127,7 @@ public sealed partial class Sala : IAsyncDisposable
         try
         {
             if (billete is null && anfitrion is null) throw new ArgumentException("Hace falta un billete o la clave del anfitrión.");
-            await s.EntrarAsync(billete, anfitrion, direcciones, ct).ConfigureAwait(false);
+            await s.EntrarAsync(billete, anfitrion, direcciones, ct, alEsperar).ConfigureAwait(false);
             s.Arrancar();
             await s.SincronizarAsync(ct).ConfigureAwait(false);
             using CancellationTokenSource tope = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -146,10 +148,17 @@ public sealed partial class Sala : IAsyncDisposable
         ["app"] = o.App,
         ["appVersion"] = o.AppVersion,
         ["carpeta"] = Path.GetFullPath(o.Carpeta),
-        ["red"] = new JsonObject { ["rele"] = o.Red.Rele, ["soloRele"] = o.Red.SoloRele, ["mdns"] = o.Red.Mdns },
+        ["red"] = RedJson(o.Red),
     };
 
-    private static string[] Textos(JsonElement lista) => [.. lista.EnumerateArray().Select(d => d.GetString()!)];
+    private static JsonObject RedJson(Red r)
+    {
+        JsonObject j = new() { ["rele"] = r.Rele, ["soloRele"] = r.SoloRele, ["mdns"] = r.Mdns };
+        if (r.ReleInseguro) j["releInseguro"] = true;
+        return j;
+    }
+
+    private static string[] Cadenas(JsonElement lista) => [.. lista.EnumerateArray().Select(d => d.GetString()!)];
 
     private static void Comprobar(OpcionesSala o)
     {
@@ -417,7 +426,9 @@ public sealed partial class Sala : IAsyncDisposable
                         _conectados.Remove(clave);
                         _presencias.Remove(clave);
                     }
-                    MiembroSale?.Invoke(clave, ev.GetProperty("motivo").GetString()!);
+                    string motivoSale = ev.GetProperty("motivo").GetString()!;
+                    _ultimaCaida = new Caida(clave, motivoSale, DateTimeOffset.UtcNow);
+                    MiembroSale?.Invoke(clave, motivoSale);
                     // Un sucesor que se va no aceptó el traspaso.
                     RespuestaDeSucesor(clave, 0, 0, listo: false);
                     // Si era el suplente, los demás tienen que saber quién lo es ahora (§5.6).
@@ -471,6 +482,7 @@ public sealed partial class Sala : IAsyncDisposable
                         _reservas.Clear();
                         foreach ((string c, string d) in reservas) _reservas[c] = new Reserva(d, Ahora);
                     }
+                    MiembrosCambiaron?.Invoke();
                     _conectado = true;
                     _sinAnfitrionDesde = null;
                     _bienvenida.TrySetResult();
@@ -478,11 +490,21 @@ public sealed partial class Sala : IAsyncDisposable
                     JsonObject[] otraVez;
                     lock (_cerrojo) otraVez = [.. _sinRespuesta.Values.Select(c => (JsonObject)c.DeepClone())];
                     foreach (JsonObject c in otraVez) await MandarCargaAsync(Guid.Parse(c["id"]!.GetValue<string>()), c, _fin.Token).ConfigureAwait(false);
-                    if (_reconectando) { _reconectando = false; Reconectada?.Invoke(); }
+                    if (_reconectando)
+                    {
+                        _reconectando = false;
+                        Interlocked.Increment(ref _reconexiones);
+                        _ultimaReconexion = DateTimeOffset.UtcNow;
+                        Reconectada?.Invoke();
+                    }
                     break;
                 }
             case "miembros":
-                if (LeerMiembros(m) is { } l) lock (_cerrojo) AplicarMiembros(l);
+                if (LeerMiembros(m) is { } l)
+                {
+                    lock (_cerrojo) AplicarMiembros(l);
+                    MiembrosCambiaron?.Invoke();
+                }
                 break;
             case "orden":
                 {

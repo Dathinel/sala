@@ -28,6 +28,10 @@ public sealed partial class Sala
     private volatile bool _cambiandoProceso;
     private volatile bool _desfasado;
     private Task<bool>? _reconexion;
+    private int _reconexiones;
+    private long? _conexionMs;
+    private DateTimeOffset? _ultimaReconexion;
+    private Caida? _ultimaCaida;
     /// <summary>Sucesor: el traspaso que preparó (época nueva y seq), a la espera de que el anfitrión lo confirme.</summary>
     private (long Nueva, long Seq)? _preparado;
     /// <summary>Anfitrión que traspasa: la respuesta del sucesor (true listo, false fallo o se fue).</summary>
@@ -46,7 +50,7 @@ public sealed partial class Sala
         get { lock (_cerrojo) return _sinRespuesta.Count; }
     }
 
-    private async Task EntrarAsync(string? billete, string? anfitrion, IEnumerable<string>? direcciones, CancellationToken ct)
+    private async Task EntrarAsync(string? billete, string? anfitrion, IEnumerable<string>? direcciones, CancellationToken ct, Action<string>? alEsperar = null)
     {
         JsonObject p = Base(_identidad, _opciones);
         p["alias"] = _opciones.Alias;
@@ -56,12 +60,50 @@ public sealed partial class Sala
             p["anfitrion"] = anfitrion;
             p["direcciones"] = new JsonArray([.. (direcciones ?? []).Select(d => (JsonNode)d)]);
         }
-        JsonElement r = await _red.LlamarAsync("unirse", p, ct).ConfigureAwait(false);
+        Task<JsonElement> unirse = _red.LlamarAsync("unirse", p, ct);
+        if (alEsperar is not null) _ = AvisarClaveAsync(unirse, alEsperar, ct);
+        JsonElement r = await unirse.ConfigureAwait(false);
         _anfitrion = r.GetProperty("anfitrion").GetString()!;
-        _anfitrionDirecciones = Textos(r.GetProperty("anfitrionDirecciones"));
-        Direcciones = Textos(r.GetProperty("direcciones"));
+        if (r.TryGetProperty("conexionMs", out JsonElement ms) && ms.ValueKind == JsonValueKind.Number && ms.TryGetInt64(out long n)) _conexionMs = n;
+        _anfitrionDirecciones = Cadenas(r.GetProperty("anfitrionDirecciones"));
+        Direcciones = Cadenas(r.GetProperty("direcciones"));
         JsonElement e = await _red.LlamarAsync("estado", null, ct).ConfigureAwait(false);
         Clave = e.GetProperty("clave").GetString()!;
+    }
+
+    /// <summary>Mientras <c>unirse</c> espera la aprobación, saca la clave propia de <c>estado</c> en cuanto el proceso la tiene.</summary>
+    private async Task AvisarClaveAsync(Task<JsonElement> unirse, Action<string> alEsperar, CancellationToken ct)
+    {
+        while (!unirse.IsCompleted && !ct.IsCancellationRequested)
+        {
+            try
+            {
+                JsonElement e = await _red.LlamarAsync("estado", null, ct).ConfigureAwait(false);
+                if (e.TryGetProperty("clave", out JsonElement c) && c.GetString() is { Length: > 0 } clave)
+                {
+                    Clave = clave;
+                    try { alEsperar(clave); }
+                    catch (Exception) { /* un fallo del aviso de la app no debe tumbar la entrada */ }
+                    return;
+                }
+            }
+            catch (SalaException)
+            {
+                // Aún no hay sala en el proceso (no-abierta) o terminó: se reintenta mientras dure la llamada larga.
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            if (!unirse.IsCompleted) await Task.Delay(100, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Cómo va la conexión (docs/api.md §2.3 y §5.9). Una llamada local barata: se puede pedir cada segundo.</summary>
+    public async Task<Diagnostico> DiagnosticoAsync(CancellationToken ct = default)
+    {
+        JsonElement e = await _red.LlamarAsync("estado", null, ct).ConfigureAwait(false);
+        return Diagnostico.Leer(e, _opciones.AppVersion, _opciones.Red.Rele, EsAnfitrion, Volatile.Read(ref _reconexiones), _conexionMs, _ultimaReconexion, _ultimaCaida);
     }
 
     private Task<JsonElement> SincronizarAsync(CancellationToken ct)
@@ -498,7 +540,7 @@ public sealed partial class Sala
             string[] otros;
             lock (_cerrojo) otros = [.. _miembros.Keys.Where(k => k != Clave)];
             JsonElement r = await _red.LlamarAsync("ascender", new JsonObject { ["anclados"] = new JsonArray([.. otros.Select(k => (JsonNode)k)]) }, ct).ConfigureAwait(false);
-            Direcciones = Textos(r.GetProperty("direcciones"));
+            Direcciones = Cadenas(r.GetProperty("direcciones"));
             List<(Guid Id, JsonElement Datos, string[] Reservas)> mias = [];
             lock (_cerrojo)
             {

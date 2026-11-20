@@ -31,6 +31,9 @@ public sealed record Directo(string De, JsonElement Datos);
 /// <param name="Mdns">Descubrir al anfitrión en la red local por su clave, sin direcciones (anuncia el equipo en la red local).</param>
 public sealed record Red(string Rele = "n0", bool SoloRele = false, bool Mdns = false)
 {
+    /// <summary>Solo para las pruebas con el relé local de <c>dathinel-red --rele-prueba</c>: el binario de producción lo rechaza.</summary>
+    internal bool ReleInseguro { get; init; }
+
     public static readonly Red N0 = new();
     public static readonly Red SinRele = new("ninguno");
 }
