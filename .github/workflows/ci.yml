@@ -41,8 +41,11 @@ jobs:
           source ../build/entorno.sh
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --all-features -- -D warnings
           cargo test --locked
-          cargo build --locked
+          cargo test --locked --all-features
+          # El binario de las pruebas de C# lleva el relé local de pruebas (--rele-prueba); el de producción se compila sin el feature.
+          cargo build --locked --features prueba
 
       - name: Licencias y avisos de crates
         if: runner.os == 'Linux'
@@ -55,8 +58,8 @@ jobs:
         run: |
           source build/entorno.sh
           dotnet build Sala.slnx -warnaserror
-          # Las pruebas de tiempo real y de rendimiento del protocolo dependen del reloj del corredor: no corren en cada PR (como en Rodaje).
-          dotnet test Sala.slnx --no-build --filter "Categoria!=TiempoReal&Categoria!=Rendimiento" --logger "console;verbosity=normal" --blame-hang-timeout 5m
+          # Las pruebas de tiempo real y de rendimiento del protocolo dependen del reloj del corredor: no corren en cada PR (como en Rodaje); las de Internet usan el relé público de n0 y solo se lanzan a mano.
+          dotnet test Sala.slnx --no-build --filter "Categoria!=TiempoReal&Categoria!=Rendimiento&Categoria!=Internet" --logger "console;verbosity=normal" --blame-hang-timeout 5m
 
       - name: Native AOT
         run: |
