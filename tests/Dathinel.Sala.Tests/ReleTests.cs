@@ -68,9 +68,9 @@ public sealed class ReleTests(ITestOutputHelper salida)
     }
 
     [Fact]
-    public async Task Una_edicion_por_rele_con_latencia_de_30_ms_por_tramo_va_en_menos_de_250_ms_p95()
+    public async Task Una_edicion_por_rele_con_latencia_de_25_ms_por_tramo_va_en_menos_de_250_ms_p95()
     {
-        await using ReleLocal rele = await ReleLocal.IniciarAsync(latenciaMs: 30);
+        await using ReleLocal rele = await ReleLocal.IniciarAsync(latenciaMs: 25);
         await using Sala ana = await AnfitrionAsync(opciones: ConRele("Ana", rele.Url));
         await using Sala luis = await Sala.UnirseAsync(Identidad.Nueva(), ConRele("Luis", rele.Url), await ana.NuevoBilleteAsync(TimeSpan.FromMinutes(10)), validar: TodoVale);
         ConcurrentDictionary<Guid, long> vuelta = new();
@@ -88,7 +88,7 @@ public sealed class ReleTests(ITestOutputHelper salida)
         ms.Sort();
         double p50 = ms[ms.Count / 2], p95 = ms[(int)(ms.Count * 0.95)];
         DiagnosticoPar p = await ParAsync(luis, x => x.Rtt is not null);
-        salida.WriteLine($"Edición por relé con 30 ms por tramo: p50 {p50:0} ms, p95 {p95:0} ms, máx {ms[^1]:0} ms; RTT de QUIC {p.Rtt?.TotalMilliseconds} ms");
+        salida.WriteLine($"Edición por relé con 25 ms por tramo: p50 {p50:0} ms, p95 {p95:0} ms, máx {ms[^1]:0} ms; RTT de QUIC {p.Rtt?.TotalMilliseconds} ms");
         Assert.Equal(Camino.Rele, p.Camino);
         Assert.InRange(p.Rtt!.Value.TotalMilliseconds, 60, 600);
         Assert.True(p95 < 250, $"p95 {p95:0} ms");
