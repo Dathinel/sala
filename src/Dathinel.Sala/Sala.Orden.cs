@@ -381,6 +381,8 @@ public sealed partial class Sala
             ["alias"] = x.Alias,
             ["rol"] = x.Rol == Rol.Mirar ? "mirar" : "editar",
         })]);
+        // Quién está conectado ahora (el anfitrión incluido): un miembro anclado que se fue sigue en «miembros» pero no aquí.
+        m["conectados"] = new JsonArray([(JsonNode)Clave, .. _conectados.Where(c => c != Clave).Select(c => (JsonNode)c)]);
         string? suplente = _conectados.FirstOrDefault(c => _miembros.TryGetValue(c, out Miembro? x) && x.Rol == Rol.Editar && _direccionesDe.ContainsKey(c));
         if (suplente is not null)
             m["suplente"] = new JsonObject { ["clave"] = suplente, ["direcciones"] = new JsonArray([.. _direccionesDe[suplente].Select(d => (JsonNode)d)]) };
