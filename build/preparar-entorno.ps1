@@ -14,15 +14,15 @@ $ProgressPreference = 'SilentlyContinue'
 if ($env:OS -eq 'Windows_NT') { $Rid = 'win-x64' } else { $Rid = [System.Runtime.InteropServices.RuntimeInformation]::RuntimeIdentifier }
 if ($Rid -notin @('win-x64', 'linux-x64', 'osx-arm64')) { Write-Host "Sistema no previsto ($Rid): solo win-x64, linux-x64 y osx-arm64."; exit 1 }
 
-# SDK de .NET 10.0.401: SHA-512 de https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json.
-$SdkVersion = '10.0.401'
+# SDK de .NET 10.0.403: SHA-512 de https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json.
+$SdkVersion = '10.0.403'
 $Sdk = @{
     'win-x64'   = @{ Paquete = "dotnet-sdk-$SdkVersion-win-x64.zip"; Exe = 'dotnet.exe'
-                     Hash = '24b670ad3d923bfcf47df6c3b034152398b42f6dbc388e10d783aee1cfb5e5817d399fc0ae2a12cfa822a55e61d34830ccb15c50ef6efee437ab874bb7c79430' }
+                     Hash = '7a114c318fa7f1d9822991b534b2814d0e78386ceda816b371f5141acefe741d87ccb606ede06cadac8f9ac5070e32b708a67bbd1619ff5e5a7858a27874ef48' }
     'linux-x64' = @{ Paquete = "dotnet-sdk-$SdkVersion-linux-x64.tar.gz"; Exe = 'dotnet'
-                     Hash = '51c8b999af9e8dd9998c9edc5944e19a90788862068acd38694e098889054ce8c23d4f0c5cccfa16bf187d044562359e5ee69a9f8ad0bbe913ba90311fbce25b' }
+                     Hash = 'b7b3d8461cf98b07d2552ce9199702fa3ad010ac2671a5f8cd5136f7534e50f6855ba7bbb02b11494563f1d04156276a31cda1103b900e5eecd0d9473dc7b9c5' }
     'osx-arm64' = @{ Paquete = "dotnet-sdk-$SdkVersion-osx-arm64.tar.gz"; Exe = 'dotnet'
-                     Hash = '69f64eb00dc045398755c440b152225d544301a345a146a16e86a56a0c52b7c94b2c331520e976dbb821f18d31930aafbd25bb85961e3517e0665414ce0cbcff' }
+                     Hash = '5893c66b48ea3674c7da18501059d606e96f3672fabe4d5e41762e692c7c83df3ee0b2b9dc5a0786191da2dc413d7335158101c14c935ab217f31ac2529770f3' }
 }[$Rid]
 
 # rustup 1.29.3 (SHA-256 de https://static.rust-lang.org/rustup/archive/1.29.3/<triple>/rustup-init[.exe].sha256).
