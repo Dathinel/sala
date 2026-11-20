@@ -162,6 +162,7 @@ public sealed class ConexionTests
     }
 
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Las_cargas_que_llegan_durante_el_traspaso_entran_una_vez()
     {
         await using Sala ana = await AnfitrionAsync();
