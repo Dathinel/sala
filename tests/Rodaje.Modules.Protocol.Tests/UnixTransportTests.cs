@@ -154,6 +154,7 @@ public sealed class UnixTransportTests
     /// Al matar el <c>sh</c> con SIGKILL, el módulo debe desaparecer enseguida (no a los 10 s de su espera de conexión).
     /// </summary>
     [UnixFact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task A_module_does_not_outlive_an_editor_killed_abruptly()
     {
         string socket = Path.Combine(UnixRuntime.SessionDirectory, "m." + Guid.NewGuid().ToString("N")[..16]);

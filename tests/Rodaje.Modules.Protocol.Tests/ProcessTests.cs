@@ -9,6 +9,7 @@ namespace Rodaje.Modules.Protocol.Tests;
 public sealed class ProcessTests(ITestOutputHelper output)
 {
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Echo_module_starts_answers_and_exits_cleanly()
     {
         Stopwatch watch = Stopwatch.StartNew();
@@ -66,6 +67,7 @@ public sealed class ProcessTests(ITestOutputHelper output)
     /// <see cref="A_module_that_dies_mid_call_fails_the_call_within_a_second"/> (TiempoReal).
     /// </remarks>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task A_module_that_dies_mid_call_fails_the_call_fast()
     {
         await using ModuleProcess module = await ModuleProcess.StartAsync(Support.EchoExe);
@@ -88,6 +90,7 @@ public sealed class ProcessTests(ITestOutputHelper output)
     }
 
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task A_killed_module_fails_the_running_call()
     {
         await using ModuleProcess module = await ModuleProcess.StartAsync(Support.EchoExe);
@@ -104,6 +107,7 @@ public sealed class ProcessTests(ITestOutputHelper output)
     /// cota fina la mide <see cref="A_module_that_ignores_cancel_is_killed_soon_after_the_grace_period"/> (TiempoReal).
     /// </remarks>
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task A_module_that_ignores_cancel_is_killed_after_the_grace_period()
     {
         await using ModuleProcess module = await ModuleProcess.StartAsync(Support.EchoExe, options: new ModuleClientOptions { CancelGrace = TimeSpan.FromMilliseconds(300) });
@@ -156,6 +160,7 @@ public sealed class ProcessTests(ITestOutputHelper output)
     }
 
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Started_by_hand_the_module_explains_itself_and_exits()
     {
         using Process process = Process.Start(new ProcessStartInfo(Support.EchoExe) { RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true })!;
