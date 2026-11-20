@@ -92,7 +92,7 @@ public sealed class ProcessTests(ITestOutputHelper output)
     {
         await using ModuleProcess module = await ModuleProcess.StartAsync(Support.EchoExe);
         TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        Task call = module.Client.InvokeAsync("contar", Support.Json("""{"pasos":10000,"msPorPaso":10}"""), progress: new SyncProgress(_ => started.TrySetResult()));
+        Task call = module.Client.InvokeAsync("contar", Support.Json("""{"pasos":10000,"msPorPaso":10}"""), progress: new Progress<ModuleProgress>(_ => started.TrySetResult()));
         await started.Task.WaitAsync(Support.CiBound);
         Process.GetProcessById(module.ProcessId).Kill();
         await Assert.ThrowsAnyAsync<ModuleDisconnectedException>(() => call.WaitAsync(Support.CiBound));
