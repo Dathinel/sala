@@ -146,7 +146,7 @@ public sealed class ReleTests(ITestOutputHelper salida)
         SalaException rara = await Assert.ThrowsAsync<SalaException>(() => Sala.UnirseAsync(Identidad.Nueva(), Opciones("Pol", version: "1.0.4-beta"), billete, validar: TodoVale));
         Assert.Equal("version", rara.Codigo);
         Assert.Contains("las dos versiones tienen que ser la misma", rara.Message);
-        Assert.Empty(ana.Miembros.Where(m => m.Alias is "Luis" or "Eva" or "Pol"));
+        Assert.DoesNotContain(ana.Miembros, m => m.Alias is "Luis" or "Eva" or "Pol");
     }
 
     [Fact]

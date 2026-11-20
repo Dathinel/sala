@@ -52,8 +52,8 @@ public sealed class DiagnosticoTests
         Assert.Null(d.Red.ReleUrl);
         Assert.False(d.Red.ReleConectado);
         Assert.Null(d.UltimaCaida);
-        Assert.Equal(0, Leer("{}").Pares.Count);
-        Assert.Equal(0, Leer("[]").Pares.Count);
+        Assert.Empty(Leer("{}").Pares);
+        Assert.Empty(Leer("[]").Pares);
     }
 
     [Fact]
