@@ -29,7 +29,7 @@ internal sealed partial class ProtocolJsonContext : JsonSerializerContext;
 /// Mensajes con marco: 4 bytes little-endian con el largo y luego el JSON en UTF-8. Las escrituras se serializan; la
 /// lectura es de un solo lector. Un marco inválido lanza <see cref="ModuleProtocolException"/>: la conexión ya no es fiable.
 /// </summary>
-internal sealed class MessageChannel(Stream stream, int maxFrameBytes = ProtocolVersion.MaxFrameBytes) : IDisposable
+internal sealed partial class MessageChannel(Stream stream, int maxFrameBytes = ProtocolVersion.MaxFrameBytes) : IDisposable
 {
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly byte[] _header = new byte[4];

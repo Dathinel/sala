@@ -14,7 +14,7 @@ namespace Rodaje.Modules.Protocol;
 /// un enlace, otro tipo de archivo o permisos distintos de 0600, y se borra al cerrarlo el editor. El nombre que viaja por
 /// el protocolo es el mismo en los tres sistemas.
 /// </remarks>
-public sealed unsafe class SharedMemoryRegion : IDisposable
+public sealed unsafe partial class SharedMemoryRegion : IDisposable
 {
     public const string NamePrefix = "Rodaje.Mod.";
 
