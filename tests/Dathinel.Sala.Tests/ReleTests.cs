@@ -31,7 +31,7 @@ public sealed class ReleTests(ITestOutputHelper salida)
         while (true)
         {
             Diagnostico d = await s.DiagnosticoAsync();
-            if (d.Pares.FirstOrDefault() is { } p && (cond?.Invoke(p) ?? true)) return p;
+            if (d.Pares.Count > 0 && (cond?.Invoke(d.Pares[0]) ?? true)) return d.Pares[0];
             if (DateTime.UtcNow > limite) Assert.Fail("El par no llegó al estado esperado: " + d.ParaTelefono());
             await Task.Delay(100);
         }
