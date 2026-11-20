@@ -90,7 +90,7 @@
       "dathinel.sala": {
         "type": "Project",
         "dependencies": {
-          "Rodaje.Modules.Protocol": "[0.1.0, )"
+          "Rodaje.Modules.Protocol": "[1.0.3, )"
         }
       },
       "rodaje.modules.protocol": {
