@@ -118,7 +118,7 @@ public sealed partial class Sala : IAsyncDisposable
     public static async Task<Sala> UnirseAsync(string identidad, OpcionesSala opciones, string? billete = null,
         string? anfitrion = null, IEnumerable<string>? direcciones = null, long epoca = 0, long ultimoSeq = 0,
         Action<Sala>? suscribir = null, Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>? validar = null,
-        CancellationToken ct = default, Action<string>? alEsperar = null)
+        Action<string>? alEsperar = null, CancellationToken ct = default)
     {
         Comprobar(opciones);
         ProcesoRed red = await ProcesoRed.AbrirAsync(opciones.Ejecutable, ct).ConfigureAwait(false);

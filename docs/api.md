@@ -191,7 +191,7 @@ Guid id = await invitado.EnviarAsync(datos, reservas: ["pista:a2"]);   // la res
 | Miembro | Qué hace |
 |---|---|
 | `HospedarAsync(identidad, opciones, anclados, validar, epoca = 1, seq = 0, suscribir)` | Abre la sala. `anclados`: los miembros que la app guardó (clave, alias, rol; menos que `MaxMiembros`). `validar`: `Func<Miembro, JsonElement, CancellationToken, ValueTask<Veredicto>>`, §5.3 |
-| `UnirseAsync(identidad, opciones, billete \| anfitrion + direcciones, epoca = 0, ultimoSeq = 0, suscribir, validar)` | Entra; vuelve tras la aprobación y la `bienvenida`. `suscribir(sala)` se llama antes de conectar, para no perder los `orden` que reponen justo después. `validar` solo se usa si llega a anfitrión (traspaso o suplente) |
+| `UnirseAsync(identidad, opciones, billete \| anfitrion + direcciones, epoca = 0, ultimoSeq = 0, suscribir, validar, alEsperar)` | Entra; vuelve tras la aprobación y la `bienvenida`. `suscribir(sala)` se llama antes de conectar, para no perder los `orden` que reponen justo después. `validar` solo se usa si llega a anfitrión (traspaso o suplente). `alEsperar(clave)` se llama con la clave pública propia en cuanto el proceso de red la tiene, mientras se espera la aprobación (hasta 10 min): la app enseña las cuatro palabras (`Huella.Palabras`) para dictárselas al anfitrión |
 | `NuevoBilleteAsync`, `RevocarAsync`, `AceptarAsync(clave, rol)`, `RechazarAsync`, `ExpulsarAsync`, `CambiarRolAsync(clave, rol)` | Anfitrión. `CambiarRolAsync` pasa por el mismo turno que el orden; a `Mirar` suelta sus reservas |
 | `EnviarAsync(datos, reservas)` | Propone una carga y vuelve con su id. En el anfitrión pasa por el mismo `validar` sin red. Sin anfitrión queda pendiente (`Pendientes`) y sale al volver |
 | `EnviarDirectoAsync(datos, a)` | Mensaje de la app **fuera del orden**: ni se valida ni se numera ni entra en el historial; a un miembro o a todos (en el invitado, solo al anfitrión). Para el manifiesto de la instantánea, pedir huellas o anunciar blobs |
@@ -200,7 +200,7 @@ Guid id = await invitado.EnviarAsync(datos, reservas: ["pista:a2"]);   // la res
 | `OfrecerBlobsAsync`, `RetirarBlobsAsync`, `PedirBlobAsync` | §5.7 |
 | `TraspasarAsync(clave)`, `TomarAnfitrionAsync()`, `ConfirmarInstantaneaAsync(epoca, seq)` | §5.6 |
 | `Miembros`, `Clave`, `Anfitrion`, `Suplente`, `Epoca`, `Seq`, `Rol`, `EsAnfitrion`, `Direcciones`, `Pendientes` | Estado |
-| Eventos | `SolicitudRecibida`, `SolicitudRetirada`, `MiembroEntra`, `MiembroSale`, `Ordenada`, `Rechazada`, `DirectoRecibido`, `ReservaCambia`, `PresenciaRecibida`, `BlobAvance`, `Desfasada`, `Superada`, `Desconectada`, `Reconectada`, `Cerrada` |
+| Eventos | `SolicitudRecibida`, `SolicitudRetirada`, `MiembroEntra`, `MiembroSale`, `MiembrosCambiaron`, `Ordenada`, `Rechazada`, `DirectoRecibido`, `ReservaCambia`, `PresenciaRecibida`, `BlobAvance`, `Desfasada`, `Superada`, `Desconectada`, `Reconectada`, `Cerrada` |
 
 `Identidad.CargarOCrear(archivo)` guarda la clave privada: en Windows cifrada con DPAPI del usuario actual; en Linux y macOS en un archivo 0600 (se rechaza si el grupo u otros pueden leerlo), sin llavero del sistema por ahora. Publica sin sobrescribir: si dos instancias la crean a la vez, las dos devuelven la que quedó guardada. Un archivo dañado da `SalaException` `identidad` y nunca se pisa.
 
