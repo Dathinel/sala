@@ -39,13 +39,13 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 
 | Función | Lado | Parámetros | Resultado |
 |---|---|---|---|
-| `abrir-sala` | anfitrión | `identidad` (64 hex, clave **privada**), `app`, `appVersion`, `red` (§2.1), `carpeta` (ruta absoluta de la carpeta de sala de la app), `anclados` (lista de claves que entran sin billete) | `clave` (la pública), `direcciones` |
-| `billete` | anfitrión | `caducaEn` (segundos, 5–604 800; 86 400 por defecto), `unUso` (sí por defecto) | `billete` (texto, §4), `id` |
+| `abrir-sala` | anfitrión | `identidad` (64 hex, clave **privada**), `app`, `appVersion`, `red` (§2.1), `carpeta` (ruta absoluta de la carpeta de sala de la app), `anclados` (lista de claves que entran sin billete) | `clave` (la pública), `direcciones`, `red` (§2.3). Con relé, espera hasta 5 s a que el equipo lo contacte; si no llega, sigue abierta y `red.releConectado` es `false` (la app avisa) |
+| `billete` | anfitrión | `caducaEn` (segundos, 5–604 800; 86 400 por defecto), `unUso` (sí por defecto) | `billete` (texto, §4), `id`, `releConectado` |
 | `revocar` | anfitrión | `id`? | — Sin `id`, invalida **todos** los billetes vivos; con `id`, solo ese. Los miembros ya anclados siguen. Retira las solicitudes afectadas con `solicitud-retirada` (`revocado`); el invitado recibe `adios` `billete-invalido` |
 | `aceptar` | anfitrión | `clave` | — La clave pasa a anclada mientras viva el proceso; la app la guarda para la próxima vez |
 | `rechazar` | anfitrión | `clave`, `motivo`? | — |
 | `expulsar` | anfitrión | `clave`, `motivo`?, `vetar` (sí por defecto) | — Cierra su conexión; con `vetar`, la saca de anclados y ningún billete la vuelve a dejar entrar en esta sala |
-| `unirse` | invitado | `identidad`, `app`, `appVersion`, `alias`, `red`, `carpeta`, y **o** `billete` **o** `anfitrion` + `direcciones`? (para volver sin billete, ya anclado) | `anfitrion` (clave), `via` (`directo` o `rele`), `anfitrionDirecciones`, `direcciones` (las propias). **Llamada larga:** espera la aprobación hasta 10 min; se cancela con `cancel`. Un invitado puede volver a llamarla en el mismo proceso (reconexión o cambio de anfitrión): conserva su endpoint y sus direcciones |
+| `unirse` | invitado | `identidad`, `app`, `appVersion`, `alias`, `red`, `carpeta`, y **o** `billete` **o** `anfitrion` + `direcciones`? (para volver sin billete, ya anclado) | `anfitrion` (clave), `anfitrionVersion`, `via` (`directo` o `rele`), `rele` (URL del relé si `via` es `rele`), `conexionMs` (de empezar a marcar a estar admitido, sin contar la espera de la aprobación), `intentos` (cuántas direcciones o caminos probó), `anfitrionDirecciones`, `direcciones` (las propias). **Llamada larga:** espera la aprobación hasta 10 min; se cancela con `cancel`. Un invitado puede volver a llamarla en el mismo proceso (reconexión o cambio de anfitrión): conserva su endpoint y sus direcciones |
 | `ascender` | invitado | `anclados` | `clave`, `direcciones`. El invitado pasa a anfitrión **con el mismo endpoint** (las direcciones que ya conocen los demás): corta con el anfitrión anterior (cierre `traspaso`) y empieza a aceptar conexiones. Lo usan el traspaso y el suplente |
 | `enviar` | los dos | `a` (lista de claves; vacía o ausente = todos los conectados; en el invitado solo vale el anfitrión), `datos` (objeto JSON, la carga de la sala, ≤ 960 KiB serializado y profundidad ≤ 28) | `encolados` (cuántos destinos) y `llenos` (claves que se saltaron). A destinos concretos es todo o nada (`ocupado-red`); en una difusión se salta a quien tiene la cola llena, que repone lo perdido al ver el hueco y `sincronizar` |
 | `recibir` | los dos | `max` (eventos, 1–1024) | `eventos` (§2.2). **Llamada larga:** vuelve en cuanto hay algo o vacía a los 25 s; una sola a la vez. El lote se corta antes de pasar de 1000 KiB serializado: un `mensaje` de 960 KiB va solo, y lo que no cabe sale en la siguiente |
@@ -53,7 +53,7 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 | `blob-retirar` | los dos | `huellas` (lista) | — |
 | `blob-pedir` | los dos | `de` (clave), `huella`, `tamano` (exacto; > 4 GiB se rechaza sin abrir el stream), `destino` (ruta local que elige la app; tiene que quedar dentro de `carpeta` una vez resuelta, o `invalid-parameters`) | `{"intento": <u64>}`. Contador del proceso desde 1. Vuelve enseguida; `blob-avance` (≤ 4/s) y `blob-fin` identifican el intento. Máximo 4 descargas por par y 16 en total; destino resuelto ya en uso → `ocupado`. Crea `<destino>.<16 hex aleatorios>.parte` en exclusiva (`create_new`, también rechaza enlaces). Comprueba que el temporal resuelto sigue dentro de `carpeta`; si no, lo borra y da `disco`. Comprueba tamaño y SHA-256; si no coinciden, borra y da `huella`. Antes de renombrar comprueba otra vez el padre del destino; si queda fuera, borra y da `disco` |
 | `blob-cancelar` | los dos | `intento` (u64) | — Señala la cancelación cooperativa. La tarea borra su `.parte` y emite un solo `blob-fin` con `error: "cancelado"`; no se aborta. Un intento ya terminado no hace nada |
-| `estado` | los dos | — | `clave`, `direcciones`, `rol` (`anfitrion`/`invitado`), `pares`: `[{clave, via, rttMs, enviadosB, recibidosB}]` |
+| `estado` | los dos | — | El diagnóstico de §2.3: `clave`, `direcciones`, `rol`, `red` (cómo salió y si el relé está conectado), `pares` (camino, latencia, pérdida, versiones, actividad) y `ultimaCaida` |
 | `cerrar` | los dos | `motivo`? | — Cancela cooperativamente las descargas, espera su limpieza y su `blob-fin` (`cancelado`), cierra todo y deja el proceso listo para salir |
 
 ### 2.1 `red`
@@ -62,9 +62,37 @@ Parámetros y resultados en JSON (`parameters` y `value` del `invoke`). Claves: 
 {"rele":"n0","mdns":false,"soloRele":false}
 ```
 
-- `rele`: `"n0"` (relés públicos de n0, por defecto; Daniel, 15-nov), `"ninguno"` (solo red local o direcciones directas; la fase 1 de Rodaje), o una URL `https://…` de un relé propio (Preferencias de cada app).
+- `rele`: `"n0"` (relés públicos de n0, por defecto; Daniel, 15-nov), `"ninguno"` (solo red local o direcciones directas; la fase 1 de Rodaje), o una URL `https://…` de un relé propio (Preferencias de cada app). Con relé, el equipo mantiene una conexión al relé de su elección (el «relé de casa») y lo usa para que los demás lo encuentren y para el camino de respaldo; se conecta **directo** en cuanto la perforación de NAT lo consigue (QUIC cambia de camino sin cortar) y vuelve al relé si el directo se cae.
 - `mdns`: descubrimiento en la red local con `iroh-mdns-address-lookup` 0.6.1 (de n0, MIT o Apache-2.0), servicio `dathinel-sala`. Encendido, el equipo **anuncia su clave en la red local** a quien escuche; sirve para entrar o volver sin direcciones. Apagado por defecto; Rodaje lo enciende en su fase 1.
-- `soloRele`: no intentar conexión directa, para no mostrar la IP a los pares. **A verificar** contra la API de iroh 1.4 en la fase de internet; si no se puede, la función falla con `invalid-parameters` en vez de prometerlo.
+- `soloRele`: no abrir ningún transporte IP: ni se anuncia ni se prueba una dirección directa y los pares no ven la IP de este equipo (sí la ve el operador del relé). Verificado con iroh 1.4.1 (`clear_ip_transports`). Con `rele: "ninguno"` la función falla con `invalid-parameters`. Cuesta latencia (todo pasa por el relé) y el relé de n0 tiene límite de tráfico: no es para proxies ni blobs grandes.
+- El billete que crea un anfitrión lleva su relé de casa (§4) y el invitado marca directamente a él; el invitado usa **su** `red.rele` como relé de casa propio, no el del billete.
+
+### 2.3 Diagnóstico: resultado de `estado`
+
+Para el panel de conexión de la app (Rodaje B11) y para leerlo por teléfono. Lo calcula `dathinel-red` de lo que iroh ya sabe de cada conexión; no mide nada por su cuenta ni manda tráfico extra. Cada campo está siempre presente (`null` si no se sabe). Tiempos en segundos Unix; ningún valor lleva rutas ni la IP de nadie.
+
+```json
+{
+  "clave": "<64 hex>", "direcciones": ["…"], "rol": "anfitrion",
+  "red": {"rele": "n0", "releUrl": "https://…", "releConectado": true, "soloRele": false, "mdns": false},
+  "pares": [{
+    "clave": "<64 hex>", "alias": "Luis",
+    "via": "rele", "rele": "https://…",
+    "rttMs": 118, "perdidosPct": 0.4, "paquetesEnviados": 5120, "paquetesPerdidos": 21,
+    "enviadosB": 1048576, "recibidosB": 524288,
+    "appVersion": "1.0.4", "protocolo": 1,
+    "conectadoDesde": 1763400000, "ultimaActividad": 1763400123, "cambiosDeCamino": 1
+  }],
+  "ultimaCaida": {"clave": "<64 hex>", "motivo": "red", "en": 1763399000}
+}
+```
+
+- `red`: lo que se pidió y lo que hay. `releUrl` es el relé de casa en uso (`null` con `rele: "ninguno"` o sin conexión); `releConectado` es `false` mientras el equipo no haya contactado con él: sin relé, desde fuera de la red local no entra nadie.
+- `via`: camino **elegido** ahora, `directo` o `rele`; `rele` es la URL del relé de ese camino (`null` si es directo). `cambiosDeCamino`: veces que el camino elegido cambió desde que el par entró.
+- `rttMs`: ida y vuelta del camino elegido que mide QUIC (con las muestras del propio tráfico, no un `ping` aparte; `null` si aún no hay). `perdidosPct`: paquetes perdidos entre enviados de toda la conexión, con un decimal (`null` con menos de 100 enviados).
+- `appVersion` y `protocolo` son los del `hola` del par (en el anfitrión) o los del `admitido` (en el invitado). Con la comprobación de §3.1, un par de otra versión no llega a estar en `pares`.
+- `ultimaActividad`: el último marco del canal ordenado recibido de ese par (cuenta también la presencia).
+- `ultimaCaida`: la última conexión admitida que se cortó en este proceso, con su `motivo` (los de `sale`: `cerro`, `red`, `ritmo`, `marco`, `expulsado`). `null` si no hubo ninguna. Las apps lo traducen a texto con `Textos.MotivoDeSalida` (§5.9).
 
 ### 2.2 Eventos de `recibir`
 
@@ -103,7 +131,7 @@ Invitado → anfitrión, primer marco:
 ```
 
 - `app` distinta → `{"type":"adios","motivo":"version","detalle":"Esta sala es de Unicomp."}` y cierre. **Rodaje y Unicomp no comparten sala** (Daniel, 15-nov).
-- `appVersion` distinta → `adios` con `version` y la versión del anfitrión: el invitado sabe cuál le falta.
+- `appVersion` distinta → `adios` con `version`, y el mensaje dice **a quién le toca actualizar** (a quien tenga la versión más baja, por comparación numérica por partes; si no se puede comparar, a los dos): «Tu Rodaje es el 1.0.3 y esta sala usa el 1.0.4: actualiza tu Rodaje.» o «Esta sala usa el 1.0.3 y tu Rodaje es el 1.0.4: pide a quien te invitó que actualice el suyo.». El `adios` lleva además `appVersion` (la del anfitrión) y `sala`; `admitido` lleva los mismos dos campos. `sala` (protocolo) distinta → el mismo `adios` y el mismo reparto. Nunca un cierre mudo: si el anfitrión no llega a decirlo, el invitado lo dice con el motivo del cierre.
 - Clave anclada (y no vetada) → admitida sin billete; `billete` y `secreto` pueden faltar.
 - Si no: el par `billete`+`secreto` tiene que ser de un billete vivo (comparación en tiempo constante), no caducado y, si es de un uso, no usado ni en trámite. Si falla → `adios` `billete-invalido` enseguida, sin evento para la app y sin ocupar un hueco de solicitud. Si vale → evento `solicitud` y el invitado espera; `aceptar` → `{"type":"admitido"}`; `rechazar` → `adios` `rechazado`. Un billete de un uso queda **en trámite** desde que se presenta bien (nadie más puede usarlo mientras) y **gastado** al aceptar o rechazar; si el invitado se va antes, vuelve a estar libre.
 - La identidad del invitado no la dice el `hola`: es la clave del par TLS de la conexión iroh. El alias es solo un nombre.
@@ -132,7 +160,8 @@ Invitado → anfitrión, primer marco:
 
 - `secreto`: 256 bits aleatorios por billete. `caduca` e `unUso` los hace cumplir el anfitrión; el `caduca` del billete es solo para que el invitado avise antes de intentarlo.
 - Cada app lo envuelve en su enlace (`rodaje://unirse/<billete>`, `unicomp://unirse/<billete>`) y su QR. El billete no lleva rutas, nombres de proyecto ni alias.
-- Sin relé (`rele` ausente) solo sirve con `direcciones` o mDNS: es el de la fase 1 de Rodaje.
+- `rele`: el **relé de casa** del anfitrión al crear el billete: su URL propia o, con `n0`, la que eligió iroh (n0 tiene varios por región y depende de la red). El invitado marca esa URL y además puede encontrarlo por el descubrimiento de n0. Si el anfitrión aún no contactó con ningún relé, `rele` falta y el resultado de `billete` trae `releConectado: false` para que la app avise.
+- Sin relé (`rele` ausente) solo sirve con `direcciones`, mDNS o el descubrimiento de n0: es el de la fase 1 de Rodaje.
 
 ## 5. `Dathinel.Sala` (C#)
 
@@ -261,6 +290,21 @@ Cada descarga es un `intento`: un final tardío nunca completa otra descarga de 
 | Alias | 1–40 caracteres, sin caracteres de control |
 
 Los límites compartidos con `dathinel-red` (marco, profundidad, carga, presencia) están en `pruebas/conformidad/limites.json`, que prueban los dos lados.
+
+### 5.9 Diagnóstico y textos (C#)
+
+```csharp
+Diagnostico d = await sala.DiagnosticoAsync();        // §2.3 tipado; una llamada local barata, se puede pedir cada segundo
+foreach (DiagnosticoPar p in d.Pares)                  // Camino (Directo|Rele|Desconocido), Rele, Rtt, PerdidaPct, AppVersion,
+    Console.WriteLine(p.Alias + ": " + p.Camino);      // Protocolo, UltimaActividad, CambiosDeCamino, EnviadosB, RecibidosB
+string ficha = d.ParaTelefono();                       // «Camino: por relé · Ida y vuelta: 118 ms · Pérdida: 0,4 % · …»
+string porQue = Textos.MotivoDeSalida("red");          // «Se cortó la conexión de red.»
+```
+
+- `Diagnostico`: `Clave`, `EsAnfitrion`, `Red` (`ReleSolicitado`, `ReleUrl`, `ReleConectado`, `SoloRele`, `Mdns`), `Pares`, `UltimaCaida` (`Clave`, `Motivo`, `En`) y lo que cuenta `Dathinel.Sala` por su cuenta: `Reconexiones`, `ConexionMs` (de `UnirseAsync`) y `UltimaReconexion`.
+- `ParaTelefono()`: texto corto y estable, de seis líneas como mucho, para leerlo en voz alta: camino, relé (el nombre del servidor de la URL, nunca una IP), ida y vuelta, pérdida, versiones propia y del otro, hace cuánto hubo actividad y el motivo de la última caída. Con las cuatro palabras de huella, no los 64 hex; sin rutas ni IP.
+- `Textos`: los avisos en español que comparten Rodaje y Unicomp (`Rele`, `Cortafuegos`, `RedSinUdp`, `MotivoDeSalida`, `ComoLeerElDiagnostico`), con el mismo fondo que `docs/internet.md`: qué ve el relé, el cortafuegos de Windows, redes que bloquean UDP y cómo leer el diagnóstico por teléfono. Las apps los muestran tal cual o los enlazan.
+- `SalaException.Codigo == "version"` lleva el texto de §3.1, listo para mostrar.
 
 ## 6. Lo que pone cada app encima
 
