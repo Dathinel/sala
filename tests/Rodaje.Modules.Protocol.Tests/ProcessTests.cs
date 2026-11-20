@@ -91,10 +91,11 @@ public sealed class ProcessTests(ITestOutputHelper output)
     public async Task A_killed_module_fails_the_running_call()
     {
         await using ModuleProcess module = await ModuleProcess.StartAsync(Support.EchoExe);
-        Task call = module.Client.InvokeAsync("contar", Support.Json("""{"pasos":10000,"msPorPaso":10}"""));
-        await Task.Delay(100);
+        TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task call = module.Client.InvokeAsync("contar", Support.Json("""{"pasos":10000,"msPorPaso":10}"""), progress: new Progress<ModuleProgress>(_ => started.TrySetResult()));
+        await started.Task.WaitAsync(Support.CiBound);
         Process.GetProcessById(module.ProcessId).Kill();
-        await Assert.ThrowsAnyAsync<ModuleDisconnectedException>(() => call.WaitAsync(TimeSpan.FromSeconds(2)));
+        await Assert.ThrowsAnyAsync<ModuleDisconnectedException>(() => call.WaitAsync(Support.CiBound));
     }
 
     /// <remarks>
