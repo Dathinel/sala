@@ -24,7 +24,8 @@ public sealed partial class Sala
         DateTimeOffset ahora = DateTimeOffset.UtcNow;
         double seg = (ahora - b.Inicio).TotalSeconds;
         double bps = seg > 0.5 ? hecho / seg : 0;
-        TimeSpan? resta = bps > 0 && hecho < b.Total ? TimeSpan.FromSeconds((b.Total - hecho) / bps) : null;
+        double faltan = bps > 0 && hecho < b.Total ? (b.Total - hecho) / bps : -1;
+        TimeSpan? resta = faltan >= 0 && faltan < TimeSpan.FromDays(30).TotalSeconds ? TimeSpan.FromSeconds(faltan) : null;
         return new ProgresoBlob(b.De, b.Huella, intento, hecho, b.Total, b.Inicio, ahora, bps, resta);
     }
 
@@ -36,8 +37,15 @@ public sealed partial class Sala
             if (!_progresos.TryGetValue(intento, out b)) return;
         }
         ProgresoBlob p = Medir(b, intento, Math.Min(hecho, b.Total));
-        BlobProgreso?.Invoke(p);
-        b.Progreso?.Report(p);
+        try
+        {
+            BlobProgreso?.Invoke(p);
+            b.Progreso?.Report(p);
+        }
+        catch (Exception)
+        {
+            // Un fallo del consumidor no debe cortar la lectura de eventos de la sala.
+        }
     }
 
     /// <summary>Ofrece archivos propios (dentro de la carpeta de sala) por su huella. No deben cambiar mientras estén ofrecidos.</summary>
@@ -76,6 +84,7 @@ public sealed partial class Sala
         }
         string? error;
         AvisarProgreso(intento, 0);
+        if (fin.Task is { IsCompletedSuccessfully: true, Result: null }) AvisarProgreso(intento, tamano);
         try
         {
             error = await fin.Task.WaitAsync(vida.Token).ConfigureAwait(false);
@@ -130,7 +139,9 @@ public sealed partial class Sala
         {
             long total;
             lock (_cerrojo) total = _progresos.TryGetValue(intento, out var b) ? b.Total : 0;
-            if (total > 0) AvisarProgreso(intento, total);
+            bool conocido;
+            lock (_cerrojo) conocido = _progresos.ContainsKey(intento);
+            if (conocido) AvisarProgreso(intento, total);
         }
         TaskCompletionSource<string?>? fin;
         lock (_cerrojo)

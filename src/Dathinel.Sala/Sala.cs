@@ -146,6 +146,7 @@ public sealed partial class Sala : IAsyncDisposable
         {
             if (billete is null && anfitrion is null) throw new ArgumentException("Hace falta un billete o la clave del anfitrión.");
             await s.EntrarAsync(billete, anfitrion, direcciones, ct, alEsperar).ConfigureAwait(false);
+            s.PonerFase(FaseConexion.Sincronizando);
             s.Arrancar();
             await s.SincronizarAsync(ct).ConfigureAwait(false);
             using CancellationTokenSource tope = CancellationTokenSource.CreateLinkedTokenSource(ct);
