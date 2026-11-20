@@ -201,7 +201,7 @@ Guid id = await invitado.EnviarAsync(datos, reservas: ["pista:a2"]);   // la res
 | `PresenciaAsync(datos)` | §5.5 |
 | `OfrecerBlobsAsync`, `RetirarBlobsAsync`, `PedirBlobAsync` | §5.7 |
 | `TraspasarAsync(clave)`, `TomarAnfitrionAsync()`, `ConfirmarInstantaneaAsync(epoca, seq)` | §5.6 |
-| `Miembros`, `Clave`, `Anfitrion`, `Suplente`, `Epoca`, `Seq`, `Rol`, `EsAnfitrion`, `Direcciones`, `Pendientes` | Estado |
+| `Miembros`, `Conectados`, `Clave`, `Anfitrion`, `Suplente`, `Epoca`, `Seq`, `Rol`, `EsAnfitrion`, `Direcciones`, `Pendientes` | Estado |
 | Eventos | `SolicitudRecibida`, `SolicitudRetirada`, `MiembroEntra`, `MiembroSale`, `MiembrosCambiaron`, `Ordenada`, `Rechazada`, `DirectoRecibido`, `ReservaCambia`, `PresenciaRecibida`, `BlobAvance`, `Desfasada`, `Superada`, `Desconectada`, `Reconectada`, `Cerrada` |
 
 `Identidad.CargarOCrear(archivo)` guarda la clave privada: en Windows cifrada con DPAPI del usuario actual; en Linux y macOS en un archivo 0600 (se rechaza si el grupo u otros pueden leerlo), sin llavero del sistema por ahora. Publica sin sobrescribir: si dos instancias la crean a la vez, las dos devuelven la que quedó guardada. Un archivo dañado da `SalaException` `identidad` y nunca se pisa.
@@ -226,7 +226,7 @@ Todos con `type` y la `epoca` de quien manda **ahora** (la pone `Dathinel.Sala` 
 | `reserva` | anfitrión → todos | `clave`, `de` (clave o nada si quedó libre) |
 | `directo` | en los dos sentidos (el invitado, solo al anfitrión) | `datos` (objeto, ≤ 900 KiB). No se reenvía |
 | `presencia` | en los dos sentidos | `datos` (objeto, ≤ 4 KiB); del anfitrión lleva además `de` |
-| `miembros` | anfitrión → todos | la lista entera y el suplente, al cambiar (entrada, salida, expulsión, cambio de rol) |
+| `miembros` | anfitrión → todos | la lista entera, el suplente y `conectados` (claves de los miembros conectados ahora, el anfitrión incluido; opcional: sin él, todos cuentan como conectados), al cambiar (entrada, salida, expulsión, cambio de rol) |
 | `traspaso-oferta` | anfitrión → sucesor | `nueva` (época), `seq`, `historial` `{huella, tamano}` del blob con el historial de reposición |
 | `traspaso-listo`, `traspaso-fallo` | sucesor → anfitrión | `nueva`, `seq` / `motivo` |
 | `traspaso-cancelado` | anfitrión → sucesor | `nueva` |

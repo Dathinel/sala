@@ -54,6 +54,24 @@ public sealed partial class Sala : IAsyncDisposable
     public Rol Rol { get; private set; } = Rol.Editar;
     public IReadOnlyList<string> Direcciones { get; private set; } = [];
 
+    private HashSet<string>? _conectadosVistos;
+
+    /// <summary>
+    /// Las claves de los miembros conectados ahora. El anfitrión lo sabe de primera mano; el invitado, por lo último que
+    /// difundió el anfitrión (si no lo dice, un anfitrión de una versión anterior, cuentan todos como conectados).
+    /// </summary>
+    public IReadOnlyCollection<string> Conectados
+    {
+        get
+        {
+            lock (_cerrojo)
+            {
+                if (EsAnfitrion) return [Clave, .. _conectados.Where(c => c != Clave)];
+                return _conectadosVistos is { } v ? [.. v] : [.. _miembros.Keys];
+            }
+        }
+    }
+
     public IReadOnlyList<Miembro> Miembros
     {
         get { lock (_cerrojo) return [.. _miembros.Values]; }
@@ -586,7 +604,7 @@ public sealed partial class Sala : IAsyncDisposable
         Superada?.Invoke(epoca, anfitrion ?? "");
     }
 
-    private sealed record ListaMiembros(Dictionary<string, Miembro> Miembros, (string Clave, string[] Direcciones)? Suplente);
+    private sealed record ListaMiembros(Dictionary<string, Miembro> Miembros, (string Clave, string[] Direcciones)? Suplente, HashSet<string>? Conectados);
 
     /// <summary>Lee <c>miembros</c> y <c>suplente</c> sin tocar nada; null si algo no vale.</summary>
     private static ListaMiembros? LeerMiembros(JsonElement m)
@@ -607,7 +625,9 @@ public sealed partial class Sala : IAsyncDisposable
                 || Limites.Textos(s, "direcciones", Limites.MaxDirecciones) is not { } sd) return null;
             suplente = (sc, sd);
         }
-        return new ListaMiembros(r, suplente);
+        // Opcional (un anfitrión viejo no lo manda: todos cuentan como conectados); lo que no sea un miembro se descarta.
+        HashSet<string>? conectados = Limites.Textos(m, "conectados", 16, 64) is { } cs ? [.. cs.Where(r.ContainsKey)] : null;
+        return new ListaMiembros(r, suplente, conectados);
     }
 
     /// <summary>Bajo el candado.</summary>
@@ -617,6 +637,7 @@ public sealed partial class Sala : IAsyncDisposable
         foreach (KeyValuePair<string, Miembro> x in l.Miembros) _miembros[x.Key] = x.Value;
         if (_miembros.TryGetValue(Clave, out Miembro? yo)) Rol = yo.Rol;
         _suplente = l.Suplente;
+        _conectadosVistos = l.Conectados;
     }
 
     private static JsonNode Nodo(JsonElement e) => JsonSerializer.SerializeToNode(e, SalaJson.Default.JsonElement)!;
