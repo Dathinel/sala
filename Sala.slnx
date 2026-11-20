@@ -3,8 +3,12 @@
     <Project Path="src/Dathinel.Sala/Dathinel.Sala.csproj" />
     <Project Path="src/Rodaje.Modules.Protocol/Rodaje.Modules.Protocol.csproj" />
   </Folder>
+  <Folder Name="/modulos/">
+    <Project Path="modules/Rodaje.Module.Echo/Rodaje.Module.Echo.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Dathinel.Sala.Tests/Dathinel.Sala.Tests.csproj" />
+    <Project Path="tests/Rodaje.Modules.Protocol.Tests/Rodaje.Modules.Protocol.Tests.csproj" />
   </Folder>
   <Folder Name="/ejemplos/">
     <Project Path="ejemplos/Consumidor/Consumidor.csproj" />
