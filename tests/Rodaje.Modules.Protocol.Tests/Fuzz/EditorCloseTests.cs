@@ -20,6 +20,7 @@ public sealed class EditorCloseTests
     private const int Rounds = 40;
 
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task The_module_sees_the_end_when_the_editor_closes_with_a_pending_read_and_unread_data()
     {
         // La CPU llena con hilos propios (no del pool), como en la CI cuando corren a la vez otros proyectos: así el

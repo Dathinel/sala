@@ -11,6 +11,7 @@ namespace Rodaje.Modules.Protocol.Tests;
 public sealed class ProcessKillTests
 {
     [Fact]
+    [Trait("Categoria", "TiempoReal")]
     public async Task Kill_from_a_pool_thread_kills_the_module_and_fails_the_running_call()
     {
         await using ModuleProcess module = await ModuleProcess.StartAsync(Support.EchoExe);
