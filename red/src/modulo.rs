@@ -11,11 +11,33 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc};
 
 use crate::marco::{self, ErrorMarco};
-use crate::sala::{self, Fallo};
 
 pub const MAX_LLAMADAS: usize = 4;
 
-const FUNCIONES: &[(&str, &str, bool)] = &[
+/// Error de una llamada: código del protocolo y mensaje para una persona.
+#[derive(Debug)]
+pub struct Fallo(pub &'static str, pub String);
+
+/// Qué módulo es: va en el `welcome`. Cada función es (id, nombre, larga y cancelable).
+pub struct Info {
+    pub id: &'static str,
+    pub nombre: &'static str,
+    pub version: &'static str,
+    pub funciones: &'static [(&'static str, &'static str, bool)],
+}
+
+/// Lo que hace el módulo: atender llamadas y cerrar todo al terminar la conexión.
+pub trait Servicio: Send + Sync + 'static {
+    fn llamar(
+        &self,
+        funcion: String,
+        parametros: Value,
+        cancelar: Arc<Notify>,
+    ) -> impl Future<Output = Result<Value, Fallo>> + Send;
+    fn cerrar(&self) -> impl Future<Output = ()> + Send;
+}
+
+pub const FUNCIONES_SALA: &[(&str, &str, bool)] = &[
     ("abrir-sala", "Abrir una sala como anfitrión", false),
     ("billete", "Crear un billete de invitación", false),
     ("revocar", "Invalidar billetes", false),
@@ -48,7 +70,11 @@ pub fn es_identificador(s: &str) -> bool {
 }
 
 /// Atiende la conexión con la app hasta `shutdown` o el cierre. Devuelve el código de salida (0 bien, 2 protocolo).
-pub async fn atender<S: AsyncRead + AsyncWrite + Send + 'static>(flujo: S) -> i32 {
+pub async fn atender<S: AsyncRead + AsyncWrite + Send + 'static, M: Servicio>(
+    flujo: S,
+    info: &'static Info,
+    servicio: Arc<M>,
+) -> i32 {
     let (mut lector, mut escritor) = tokio::io::split(flujo);
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     let escritura = tokio::spawn(async move {
@@ -61,14 +87,19 @@ pub async fn atender<S: AsyncRead + AsyncWrite + Send + 'static>(flujo: S) -> i3
         }
     });
 
-    let codigo = bucle(&mut lector, &tx).await;
-    sala::cerrar_todo().await;
+    let codigo = bucle(&mut lector, &tx, info, &servicio).await;
+    servicio.cerrar().await;
     drop(tx);
     let _ = tokio::time::timeout(Duration::from_secs(2), escritura).await;
     codigo
 }
 
-async fn bucle<R: AsyncRead + Unpin>(lector: &mut R, tx: &mpsc::UnboundedSender<Value>) -> i32 {
+async fn bucle<R: AsyncRead + Unpin, M: Servicio>(
+    lector: &mut R,
+    tx: &mpsc::UnboundedSender<Value>,
+    info: &'static Info,
+    servicio: &Arc<M>,
+) -> i32 {
     let hello = match tokio::time::timeout(
         Duration::from_secs(30),
         marco::leer(lector, marco::MAX_LOCAL, marco::MAX_PROFUNDIDAD),
@@ -92,15 +123,16 @@ async fn bucle<R: AsyncRead + Unpin>(lector: &mut R, tx: &mpsc::UnboundedSender<
         .unwrap_or(0);
     if min < 1 || max < min || min > 1 {
         let _ = tx.send(json!({"type":"error","code":"version-incompatible",
-            "message": format!("dathinel-red habla el protocolo 1–1 y la app {min}–{max}.")}));
+            "message": format!("{} habla el protocolo 1–1 y la app {min}–{max}.", info.id)}));
         return 2;
     }
-    let funciones: Vec<Value> = FUNCIONES
+    let funciones: Vec<Value> = info
+        .funciones
         .iter()
         .map(|(id, nombre, larga)| json!({"id":id,"name":nombre,"cancellable":larga,"reportsProgress":false}))
         .collect();
     let _ = tx.send(json!({"type":"welcome","protocol":1,"module":{
-        "id":"dathinel-red","version":env!("CARGO_PKG_VERSION"),"name":"Red de Sala","functions":funciones,"device":"cpu"}}));
+        "id":info.id,"version":info.version,"name":info.nombre,"functions":funciones,"device":"cpu"}}));
 
     let activas: Arc<Mutex<HashMap<i64, Arc<Notify>>>> = Arc::default();
     loop {
@@ -126,7 +158,7 @@ async fn bucle<R: AsyncRead + Unpin>(lector: &mut R, tx: &mpsc::UnboundedSender<
                     return malformado(tx, "id de llamada repetido");
                 }
                 if a.len() >= MAX_LLAMADAS {
-                    let _ = tx.send(json!({"type":"error","id":id,"code":"busy","message":"dathinel-red está ocupado."}));
+                    let _ = tx.send(json!({"type":"error","id":id,"code":"busy","message":format!("{} está ocupado.", info.id)}));
                     continue;
                 }
                 let cancelar = Arc::new(Notify::new());
@@ -134,8 +166,9 @@ async fn bucle<R: AsyncRead + Unpin>(lector: &mut R, tx: &mpsc::UnboundedSender<
                 drop(a);
                 let (tx, activas, funcion) = (tx.clone(), activas.clone(), funcion.to_string());
                 let parametros = m.get("parameters").cloned().unwrap_or(Value::Null);
+                let servicio = servicio.clone();
                 tokio::spawn(async move {
-                    let respuesta = match sala::llamar(&funcion, parametros, cancelar).await {
+                    let respuesta = match servicio.llamar(funcion, parametros, cancelar).await {
                         Ok(v) => json!({"type":"result","id":id,"value":v}),
                         Err(Fallo(code, msg)) => {
                             json!({"type":"error","id":id,"code":code,"message":msg})
@@ -167,6 +200,92 @@ async fn bucle<R: AsyncRead + Unpin>(lector: &mut R, tx: &mpsc::UnboundedSender<
             _ => return malformado(tx, "mensaje que la app no manda"),
         }
     }
+}
+
+const ARG_TUBERIA: &str = "--rodaje-pipe";
+
+/// Si la app muere de golpe, el proceso no se queda vivo (en Windows lo hace el Job Object de la app).
+pub fn vigilar_padre() {
+    #[cfg(unix)]
+    {
+        let padre = std::os::unix::process::parent_id();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                if std::os::unix::process::parent_id() != padre {
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
+}
+
+/// Conecta con la app por `--rodaje-pipe <nombre o ruta>` y la atiende. Devuelve el código de salida.
+pub async fn ejecutar<M: Servicio>(args: &[String], info: &'static Info, servicio: Arc<M>) -> i32 {
+    let Some(nombre) = args
+        .iter()
+        .position(|a| a == ARG_TUBERIA)
+        .and_then(|i| args.get(i + 1))
+    else {
+        eprintln!(
+            "Este programa es el módulo {} ({}); lo abre la app.",
+            info.id, info.nombre
+        );
+        return 64;
+    };
+    match conectar(nombre, info, servicio).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("No se pudo conectar con la app: {e}");
+            2
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn conectar<M: Servicio>(
+    nombre: &str,
+    info: &'static Info,
+    servicio: Arc<M>,
+) -> std::io::Result<i32> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    let valido = (1..=128).contains(&nombre.len())
+        && nombre
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c));
+    if !valido {
+        return Err(std::io::Error::other("nombre de tubería inválido"));
+    }
+    let ruta = format!(r"\\.\pipe\{nombre}");
+    let limite = tokio::time::Instant::now() + Duration::from_secs(10);
+    let tuberia = loop {
+        match ClientOptions::new().open(&ruta) {
+            Ok(t) => break t,
+            Err(e) if tokio::time::Instant::now() < limite && e.raw_os_error() == Some(231) => {
+                // ERROR_PIPE_BUSY
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    Ok(atender(tuberia, info, servicio).await)
+}
+
+#[cfg(unix)]
+async fn conectar<M: Servicio>(
+    ruta: &str,
+    info: &'static Info,
+    servicio: Arc<M>,
+) -> std::io::Result<i32> {
+    if !ruta.starts_with('/') || ruta.contains("/../") {
+        return Err(std::io::Error::other("ruta de socket inválida"));
+    }
+    let socket = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::net::UnixStream::connect(ruta),
+    )
+    .await??;
+    Ok(atender(socket, info, servicio).await)
 }
 
 fn malformado(tx: &mpsc::UnboundedSender<Value>, porque: &str) -> i32 {
