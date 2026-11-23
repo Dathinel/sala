@@ -3,7 +3,6 @@
 mod billete;
 mod blobs;
 mod diagnostico;
-mod hex;
 #[cfg(test)]
 mod pruebas;
 #[cfg(feature = "prueba")]
@@ -14,7 +13,7 @@ mod version;
 use std::sync::Arc;
 
 use dathinel_red::modulo::{self, FUNCIONES_SALA, Fallo, Info, Servicio};
-use dathinel_red::{limites, marco};
+use dathinel_red::{hex, limites, marco};
 use serde_json::Value;
 use tokio::sync::Notify;
 
