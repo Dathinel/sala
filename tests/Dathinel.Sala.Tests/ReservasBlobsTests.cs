@@ -6,8 +6,23 @@ using static Dathinel.Sala.Tests.Entorno;
 namespace Dathinel.Sala.Tests;
 
 /// <summary>Reservas (§5.4), presencia (§5.5) y blobs por huella (§5.7), con procesos reales.</summary>
-public sealed class ReservasBlobsTests
+public sealed class ReservasBlobsTests : IDisposable
 {
+    private readonly List<string> _carpetas = [];
+
+    private string NuevaCarpeta()
+    {
+        string carpeta = Carpeta();
+        _carpetas.Add(carpeta);
+        return carpeta;
+    }
+
+    public void Dispose()
+    {
+        foreach (string carpeta in _carpetas)
+            Directory.Delete(carpeta, recursive: true);
+    }
+
     private static async Task<Sala> InvitadoAsync(Sala anf, string alias, OpcionesSala? o = null) =>
         await Sala.UnirseAsync(Identidad.Nueva(), o ?? Opciones(alias), await anf.NuevoBilleteAsync(TimeSpan.FromMinutes(10)));
 
@@ -89,7 +104,7 @@ public sealed class ReservasBlobsTests
     [Fact]
     public async Task Un_blob_ofrecido_llega_entero_y_comprobado()
     {
-        string cAna = Carpeta(), cLuis = Carpeta();
+        string cAna = NuevaCarpeta(), cLuis = NuevaCarpeta();
         await using Sala anf = await AnfitrionAsync(opciones: Opciones("Ana", cAna));
         await using Sala luis = await InvitadoAsync(anf, "Luis", Opciones("Luis", cLuis));
         var b = Archivo(cAna, 3 * 1024 * 1024 + 17);
@@ -107,7 +122,7 @@ public sealed class ReservasBlobsTests
     [Fact]
     public async Task Blobs_hostiles_no_escriben_nada()
     {
-        string cAna = Carpeta(), cLuis = Carpeta();
+        string cAna = NuevaCarpeta(), cLuis = NuevaCarpeta();
         await using Sala anf = await AnfitrionAsync(opciones: Opciones("Ana", cAna));
         await using Sala luis = await InvitadoAsync(anf, "Luis", Opciones("Luis", cLuis));
         var b = Archivo(cAna, 200_000);
@@ -182,7 +197,7 @@ public sealed class ReservasBlobsTests
     [Fact]
     public async Task Cancelar_una_descarga_borra_el_temporal_y_no_deja_nada()
     {
-        string cAna = Carpeta(), cLuis = Carpeta();
+        string cAna = NuevaCarpeta(), cLuis = NuevaCarpeta();
         await using Sala anf = await AnfitrionAsync(opciones: Opciones("Ana", cAna));
         await using Sala luis = await InvitadoAsync(anf, "Luis", Opciones("Luis", cLuis));
         var b = Grande(cAna, 256L << 20);
@@ -201,9 +216,9 @@ public sealed class ReservasBlobsTests
     [Fact]
     public async Task Cerrar_la_sala_durante_una_descarga_no_deja_la_espera_colgada()
     {
-        string cAna = Carpeta(), cLuis = Carpeta();
+        string cAna = NuevaCarpeta(), cLuis = NuevaCarpeta();
         await using Sala anf = await AnfitrionAsync(opciones: Opciones("Ana", cAna));
-        Sala luis = await InvitadoAsync(anf, "Luis", Opciones("Luis", cLuis));
+        await using Sala luis = await InvitadoAsync(anf, "Luis", Opciones("Luis", cLuis));
         var b = Grande(cAna, 256L << 20);
         await anf.OfrecerBlobsAsync([b]);
         TaskCompletionSource avanza = new(TaskCreationOptions.RunContinuationsAsynchronously);
