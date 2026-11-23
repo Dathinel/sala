@@ -57,9 +57,7 @@ fn motivo(codigo: u64) -> &'static str {
     }
 }
 
-/// Error de una llamada: código del protocolo y mensaje para una persona.
-#[derive(Debug)]
-pub struct Fallo(pub &'static str, pub String);
+pub use crate::modulo::Fallo;
 
 fn fallo<T>(code: &'static str, msg: impl Into<String>) -> Result<T, Fallo> {
     Err(Fallo(code, msg.into()))
